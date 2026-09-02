@@ -10,6 +10,8 @@ export interface PromptExtras {
   memoryBlock?: string;
   /** Preloaded skill contents to inject. */
   skillBlocks?: { name: string; content: string }[];
+  /** Catalog entries: name + description + path, Pi Agent Skills format. */
+  skillCatalog?: { name: string; description: string; filePath: string }[];
   /**
    * Parent directory the worktree copy was created from. Set only for
    * `isolation: "worktree"` spawns — triggers the block that tells the agent
@@ -70,6 +72,9 @@ Work only inside it — never in ${extras.worktreeBase}, even if other instructi
       extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`);
     }
   }
+  if (extras?.skillCatalog?.length) {
+    extraSections.push(formatSkillCatalog(extras.skillCatalog));
+  }
   const extrasSuffix = extraSections.length > 0 ? "\n\n" + extraSections.join("\n") : "";
 
   if (config.promptMode === "append") {
@@ -107,6 +112,34 @@ You have been invoked to handle a specific task autonomously.
 ${envBlock}`;
 
   return activeAgentTag + replaceHeader + worktreeBlock + "\n\n" + config.systemPrompt + extrasSuffix;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function formatSkillCatalog(skills: { name: string; description: string; filePath: string }[]): string {
+  const lines = [
+    "The following skills provide specialized instructions for specific tasks.",
+    "Use the read tool to load a skill's file when the task matches its description.",
+    "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md) and use that absolute path in tool commands.",
+    "",
+    "<available_skills>",
+  ];
+  for (const skill of skills) {
+    lines.push("  <skill>");
+    lines.push(`    <name>${escapeXml(skill.name)}</name>`);
+    lines.push(`    <description>${escapeXml(skill.description)}</description>`);
+    lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
+    lines.push("  </skill>");
+  }
+  lines.push("</available_skills>");
+  return lines.join("\n");
 }
 
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */

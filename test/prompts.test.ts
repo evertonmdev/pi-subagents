@@ -269,6 +269,35 @@ describe("buildAgentPrompt", () => {
     expect(prompt).toContain("Handle errors gracefully.");
   });
 
+  it("injects skill catalog without full bodies", () => {
+    const config: AgentConfig = {
+      name: "catalog-agent",
+      description: "Catalog Agent",
+      builtinToolNames: [],
+      extensions: true,
+      skills: true,
+      systemPrompt: "You are a catalog agent.",
+      promptMode: "replace",
+      inheritContext: false,
+      runInBackground: false,
+      isolated: false,
+    };
+    const extras = {
+      skillCatalog: [
+        {
+          name: "heroui-color-system",
+          description: "Use HeroUI color tokens.",
+          filePath: "/tmp/heroui-color-system/SKILL.md",
+        },
+      ],
+    };
+    const prompt = buildAgentPrompt(config, "/workspace", env, undefined, extras);
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain("<name>heroui-color-system</name>");
+    expect(prompt).toContain("Use HeroUI color tokens.");
+    expect(prompt).not.toContain("Preloaded Skill: heroui-color-system");
+  });
+
   it("injects both memory and skills", () => {
     const config: AgentConfig = {
       name: "full-agent",

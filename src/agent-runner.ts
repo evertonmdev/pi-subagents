@@ -25,7 +25,7 @@ import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager } from "./nested-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
-import { preloadSkills } from "./skill-loader.js";
+import { loadSkillCatalog, preloadSkills, splitSkillList } from "./skill-loader.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
 
 /**
@@ -582,11 +582,15 @@ export async function runAgent(
   const excludeExtensions = options.isolated ? undefined : config.excludeExtensions;
   const skills = options.isolated ? false : config.skills;
 
-  // Skill preloading: when skills is string[], preload their content into prompt
+  // YAML skills: ponytail (and any ALWAYS_PRELOAD) get the full body.
+  // Everything else is a Pi catalog entry (name + description + path).
   if (Array.isArray(skills)) {
-    const loaded = preloadSkills(skills, configCwd);
-    if (loaded.length > 0) {
-      extras.skillBlocks = loaded;
+    const { preload, catalog } = splitSkillList(skills);
+    if (preload.length > 0) {
+      extras.skillBlocks = preloadSkills(preload, configCwd);
+    }
+    if (catalog.length > 0) {
+      extras.skillCatalog = loadSkillCatalog(catalog, configCwd);
     }
   }
 

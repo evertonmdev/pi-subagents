@@ -107,6 +107,11 @@ vi.mock("../src/memory.js", () => ({
 
 vi.mock("../src/skill-loader.js", () => ({
   preloadSkills: vi.fn(() => []),
+  loadSkillCatalog: vi.fn(() => []),
+  splitSkillList: vi.fn((names: string[]) => ({
+    preload: names.filter((name) => name === "ponytail"),
+    catalog: names.filter((name) => name !== "ponytail"),
+  })),
 }));
 
 vi.mock("../src/nested-tools.js", () => ({
