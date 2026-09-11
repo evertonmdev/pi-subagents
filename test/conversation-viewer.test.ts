@@ -1,3 +1,4 @@
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRecord } from "../src/types.js";
 
@@ -72,6 +73,7 @@ function assertAllLinesFit(lines: string[], width: number) {
 // ── Tests ──────────────────────────────────────────────────────────────
 
 beforeEach(() => {
+  initTheme("dark", false);
   wrapOverride = null;
 });
 

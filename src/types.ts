@@ -22,6 +22,8 @@ export type IsolationMode = "worktree";
 
 /** Unified agent configuration — used for both default and user-defined agents. */
 export interface AgentConfig {
+  /** settings.json agentModels is authoritative; resolution failures must not inherit the parent. */
+  modelFromSettings?: boolean;
   name: string;
   /** UI name. `display_name` wins; Claude Code's `name` is accepted as a fallback. */
   displayName?: string;
@@ -173,6 +175,8 @@ export interface AgentRecord {
    * in-memory session, which leaves nothing to reopen.
    */
   sessionFile?: string;
+  /** Actual tools cwd, retained so a restored conversation cannot silently move repositories. */
+  executionCwd?: string;
   /** Cleanup function for the output file stream subscription. */
   outputCleanup?: () => void;
   /**

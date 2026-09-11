@@ -218,9 +218,9 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       const invocation = resolveAgentInvocationConfig(config, params);
       let model = ctx.model;
       if (invocation.modelInput) {
-        const resolvedModel = resolveModel(invocation.modelInput, ctx.modelRegistry);
+        const resolvedModel = resolveModel(invocation.modelInput, ctx.modelRegistry, config?.modelFromSettings);
         if (typeof resolvedModel === "string") {
-          if (invocation.modelFromParams) return textResult(resolvedModel, true);
+          if (invocation.modelFromParams || config?.modelFromSettings) return textResult(resolvedModel, true);
         } else {
           model = resolvedModel;
         }

@@ -5,7 +5,9 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { BUILTIN_TOOL_NAMES } from "./agent-types.js";
+import { applyAgentModelSettings, readAgentModels } from "./agent-model-settings.js";
+import { BUILTIN_TOOL_NAMES, isDefaultsDisabled } from "./agent-types.js";
+import { DEFAULT_AGENTS } from "./default-agents.js";
 import type { AgentConfig, MemoryScope, ThinkingLevel } from "./types.js";
 
 /**
@@ -50,6 +52,14 @@ export function loadCustomAgents(cwd: string, strict = false): Map<string, Agent
   loadFromDir(globalDir, agents, "global", strict);            // lowest priority
   loadFromDir(workspaceProjectDir, agents, "project", strict); // shared workspace
   loadFromDir(projectDir, agents, "project", strict);          // highest priority (overwrites)
+
+  const models = readAgentModels(cwd);
+  if (!isDefaultsDisabled()) {
+    for (const [name, config] of DEFAULT_AGENTS) {
+      if (!agents.has(name) && (models[name] || models.default)) agents.set(name, { ...config });
+    }
+  }
+  for (const config of agents.values()) applyAgentModelSettings(config, models);
 
   warnedLastLoad = warnedThisLoad;
   warnedThisLoad = new Set();

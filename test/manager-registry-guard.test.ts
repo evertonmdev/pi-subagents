@@ -141,7 +141,8 @@ describe("the registry spawn strips internal capabilities", () => {
     // configCwd names where agent files and memory are resolved from.
     const { entry, id, root, runOpts } = forge({ rootSessionId: "../../elsewhere", configCwd: "/etc" });
 
-    expect(entry.getRecord(id).rootSessionId).toBeUndefined();
+    // Persistence derives ownership from the actual parent, never the forged option.
+    expect(entry.getRecord(id).rootSessionId).toBe("s1");
     expect(runOpts().configCwd).toBeUndefined();
     await root.lifecycle.get("session_shutdown")?.();
   });

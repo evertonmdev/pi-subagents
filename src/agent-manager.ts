@@ -8,10 +8,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { AgentRecordStore, decodeAgentRecord } from "./agent-record-store.js";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
 import { assignHandle, handleBase } from "./mention.js";
 import type { AgentInvocation, AgentRecord, AgentTombstone, IsolationMode, MentionResolution, SubagentType, ThinkingLevel } from "./types.js";
@@ -182,6 +183,9 @@ interface ResumeOptions {
 
 export class AgentManager {
   private agents = new Map<string, AgentRecord>();
+  private recordStores = new WeakMap<AgentRecord, AgentRecordStore>();
+  private currentStore?: AgentRecordStore;
+  private currentSessionId?: string;
   private cleanupInterval: ReturnType<typeof setInterval>;
   private onComplete?: OnAgentComplete;
   private onStart?: OnAgentStart;
@@ -230,6 +234,76 @@ export class AgentManager {
     return this.maxConcurrent;
   }
 
+  /** Bind reads to the opened parent session; old in-flight records keep their own writer. */
+  restoreSession(sessionId: string, sessionFile: string | undefined, entries: readonly unknown[] = []): void {
+    if (this.currentSessionId !== sessionId) this.tombstones.clear();
+    this.currentSessionId = sessionId;
+    this.currentStore = sessionFile ? new AgentRecordStore(sessionFile, sessionId) : undefined;
+    const saved = new Map<string, AgentRecord>();
+    // Older releases already wrote final results to the parent journal.
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const item = entry as Record<string, unknown>;
+      if (item.type !== "custom" || item.customType !== "subagents:record") continue;
+      const record = decodeAgentRecord(item.data, sessionId);
+      if (record) saved.set(record.id, record);
+    }
+    // The sidecar is newer than the legacy completion entry (e.g. after consumption/resume).
+    for (const record of this.currentStore?.list() ?? []) saved.set(record.id, record);
+    for (const record of saved.values()) {
+      if (this.agents.has(record.id)) continue; // repeated session_start must not stop a live run
+      this.restoreRecord(record);
+    }
+  }
+
+  private restoreRecord(record: AgentRecord): AgentRecord {
+    if (record.status === "running" || record.status === "queued") {
+      record.status = "stopped";
+      record.completedAt = Date.now();
+      record.error = "Interrupted when the Pi session ended. This agent is not running; explicitly resume it to continue.";
+    }
+    this.agents.set(record.id, record);
+    if (this.currentStore) this.recordStores.set(record, this.currentStore);
+    this.persistRecord(record);
+    return record;
+  }
+
+  /** Checkpoint only serializable fields; failures must be visible without aborting a live agent. */
+  persistRecord(record: AgentRecord): void {
+    try { this.recordStores.get(record)?.save(record); } catch {
+      console.error(`[subagents] Could not persist agent ${record.id}; restart recovery may be incomplete.`);
+    }
+  }
+
+  /** Reopen a saved conversation under its original identity using the normal scoped runner. */
+  async resumePersisted(pi: ExtensionAPI, ctx: ExtensionContext, id: string, prompt: string, options: SpawnOptions): Promise<AgentRecord | undefined> {
+    const record = this.getRecord(id);
+    if (!record || record.session || record.status === "running" || record.status === "queued") return undefined;
+    if (!record.sessionFile || !existsSync(record.sessionFile)) throw new Error(`Agent "${id}" has no saved transcript to resume. Its saved result is still available.`);
+    assertValidSpawnCwd(record.executionCwd);
+    record.isBackground = options.isBackground;
+    record.resultConsumed = false;
+    record.result = undefined;
+    record.error = undefined;
+    record.completedAt = undefined;
+    record.worktree = undefined; // an old run's worktree must never be cleaned up twice
+    record.abortController = new AbortController();
+    record.status = "queued";
+    const args: SpawnArgs = { pi, ctx, type: record.type, prompt, options: {
+      ...options, description: record.description, resumeSessionFile: record.sessionFile,
+      cwd: record.executionCwd, isolation: undefined,
+      depth: record.depth, parentAgentId: record.parentAgentId, maxSubagentDepth: record.maxSubagentDepth,
+    } };
+    this.persistRecord(record);
+    if (occupiesPoolSlot(record) && this.runningBackground >= this.maxConcurrent) {
+      this.queue.push({ id, start: () => this.startAgent(id, record, args) });
+    } else {
+      this.startAgent(id, record, args);
+    }
+    if (!options.isBackground) await record.promise;
+    return record;
+  }
+
   /**
    * Spawn an agent and return its ID immediately (for background use).
    * If the concurrency limit is reached, the agent is queued.
@@ -276,13 +350,18 @@ export class AgentManager {
       // only filter excludes only explicit `false`, so undefined agents — which
       // have no inline surface — stay visible instead of vanishing.
       isBackground: options.isBackground,
-      invocation: options.invocation,
+      invocation: options.invocation ?? { isolated: options.isolated, inheritContext: options.inheritContext, thinking: options.thinkingLevel, maxTurns: options.maxTurns, isolation: options.isolation },
       depth: options.depth ?? 1,
       parentAgentId: options.parentAgentId,
       maxSubagentDepth: options.maxSubagentDepth,
-      rootSessionId: options.rootSessionId,
+      rootSessionId: options.rootSessionId ?? ctx.sessionManager?.getSessionId?.(),
     };
     this.agents.set(id, record);
+    const parent = options.parentAgentId ? this.agents.get(options.parentAgentId) : undefined;
+    const parentStore = parent ? this.recordStores.get(parent) : undefined;
+    const sessionFile = ctx.sessionManager?.getSessionFile?.();
+    const store = parentStore ?? (sessionFile && record.rootSessionId ? new AgentRecordStore(sessionFile, record.rootSessionId) : undefined);
+    if (store) this.recordStores.set(record, store);
     // After the insert, so `takenHandles()` already counts this record's own
     // handle — a spawn named after its own type gets `explore-2`, not a
     // duplicate `explore` that would make resolution ambiguous.
@@ -291,6 +370,7 @@ export class AgentManager {
     }
 
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
+    this.persistRecord(record);
 
     if (occupiesPoolSlot(record) && !options.bypassQueue && this.runningBackground >= this.maxConcurrent) {
       // Queue it — will be started when a running agent completes
@@ -303,6 +383,10 @@ export class AgentManager {
     try {
       this.startAgent(id, record, args);
     } catch (err) {
+      record.status = "error";
+      record.error = err instanceof Error ? err.message : String(err);
+      record.completedAt = Date.now();
+      this.persistRecord(record);
       this.agents.delete(id);
       throw err;
     }
@@ -344,7 +428,9 @@ export class AgentManager {
     }
 
     record.status = "running";
+    record.executionCwd = worktreeCwd ?? baseCwd;
     record.startedAt = Date.now();
+    this.persistRecord(record);
     if (occupiesPoolSlot(record)) this.runningBackground++;
     this.onStart?.(record);
 
@@ -381,9 +467,10 @@ export class AgentManager {
       onToolActivity: (activity) => {
         if (activity.type === "end") record.toolUses++;
         options.onToolActivity?.(activity);
+        if (activity.type === "end") this.persistRecord(record);
       },
-      onTurnEnd: options.onTurnEnd,
-      onTextDelta: options.onTextDelta,
+      onTurnEnd: (turnCount) => { options.onTurnEnd?.(turnCount); this.persistRecord(record); },
+      onTextDelta: (delta, fullText) => { record.result = fullText; options.onTextDelta?.(delta, fullText); },
       onAssistantUsage: (usage) => {
         addUsage(record.lifetimeUsage, usage);
         options.onAssistantUsage?.(usage);
@@ -410,6 +497,7 @@ export class AgentManager {
         // stubbed session must degrade to "not resumable" rather than throw
         // and take the whole spawn down with it.
         record.sessionFile = session.sessionManager?.getSessionFile?.();
+        this.persistRecord(record);
         // Flush any steers that arrived before the session was ready
         if (record.pendingSteers?.length) {
           for (const msg of record.pendingSteers) {
@@ -466,8 +554,10 @@ export class AgentManager {
         // Mark resultConsumed so the callback skips notifications (result returned inline).
         if (!options.isBackground) {
           record.resultConsumed = true;
+          this.persistRecord(record);
           try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
         } else {
+          this.persistRecord(record);
           if (occupiesPoolSlot(record)) this.runningBackground--;
           try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
           this.drainQueue();
@@ -501,6 +591,7 @@ export class AgentManager {
         this.abortOwnedChildren(id);
 
         // Fire onComplete for foreground agents too — lifecycle symmetry.
+        this.persistRecord(record);
         // Mark resultConsumed so the callback skips notifications (result returned inline).
         if (!options.isBackground) {
           record.resultConsumed = true;
@@ -547,6 +638,7 @@ export class AgentManager {
         record.status = "error";
         record.error = err instanceof Error ? err.message : String(err);
         record.completedAt = Date.now();
+        this.persistRecord(record);
         this.onComplete?.(record);
       }
     }
@@ -601,7 +693,7 @@ export class AgentManager {
     signal?: AbortSignal,
     options?: ResumeOptions,
   ): Promise<AgentRecord | undefined> {
-    const record = this.agents.get(id);
+    const record = this.getRecord(id);
     if (!record?.session) return undefined;
 
     // Background resume: settle asynchronously and notify on completion exactly
@@ -628,6 +720,7 @@ export class AgentManager {
       record.error = undefined;
       record.completedAt = undefined;
       record.status = "queued";
+      this.persistRecord(record);
 
       const start = () => this.startResume(id, record, prompt, signal, options);
       if (occupiesPoolSlot(record) && this.runningBackground >= this.maxConcurrent) {
@@ -645,6 +738,7 @@ export class AgentManager {
     record.completedAt = undefined;
     record.result = undefined;
     record.error = undefined;
+    this.persistRecord(record);
 
     try {
       const { text, failure } = await resumeAgent(record.session, prompt, {
@@ -679,6 +773,8 @@ export class AgentManager {
     // resumed turn must not outlive it — nothing else can see or reach them.
     this.abortOwnedChildren(id);
 
+    this.persistRecord(record);
+
     return record;
   }
 
@@ -700,6 +796,7 @@ export class AgentManager {
 
     record.status = "running";
     record.startedAt = Date.now();
+    this.persistRecord(record);
     if (occupiesPoolSlot(record)) this.runningBackground++;
     this.onStart?.(record);
 
@@ -732,6 +829,7 @@ export class AgentManager {
       }
       // Children spawned during the resumed turn must not outlive it.
       this.abortOwnedChildren(id);
+      this.persistRecord(record);
       if (occupiesPoolSlot(record)) this.runningBackground--;
       try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
       this.drainQueue();
@@ -801,13 +899,20 @@ export class AgentManager {
   }
 
   getRecord(id: string): AgentRecord | undefined {
-    return this.agents.get(id);
+    const live = this.agents.get(id);
+    if (live && (!this.currentSessionId || live.rootSessionId === this.currentSessionId)) return live;
+    const saved = this.currentStore?.get(id);
+    return saved ? this.restoreRecord(saved) : undefined;
   }
 
   /** Handles already in use, so a fresh spawn can pick an unclaimed one. */
   private takenHandles(): Set<string> {
     const taken = new Set<string>();
-    for (const record of this.agents.values()) {
+    for (const record of this.listAgents()) {
+      if (record.handle) taken.add(record.handle);
+      if (record.alias) taken.add(record.alias);
+    }
+    for (const record of this.currentStore?.list() ?? []) {
       if (record.handle) taken.add(record.handle);
       if (record.alias) taken.add(record.alias);
     }
@@ -830,7 +935,7 @@ export class AgentManager {
   resolveMention(name: string): MentionResolution | undefined {
     const wanted = name.toLowerCase();
     let fallback: AgentRecord | undefined;
-    for (const record of this.agents.values()) {
+    for (const record of this.listAgents()) {
       if (record.parentAgentId !== undefined) continue;
       // Handle and alias share one namespace, so at most one agent answers a
       // name and it makes no difference which of the two matched.
@@ -839,15 +944,19 @@ export class AgentManager {
       if (!fallback || record.startedAt > fallback.startedAt) fallback = record;
     }
     if (fallback) return { kind: "live", record: fallback };
-    const byId = this.agents.get(name);
+    const byId = this.getRecord(name);
     if (byId?.parentAgentId === undefined && byId !== undefined) return { kind: "live", record: byId };
     // Only once nothing live answers: a tombstone is a conversation to reopen,
     // and reopening one while its record still exists would fork the session.
     for (const entry of this.tombstones.values()) {
       if (entry.handle.toLowerCase() === wanted || entry.alias?.toLowerCase() === wanted || entry.id === name) {
+        const saved = this.getRecord(entry.id);
+        if (saved) return { kind: "live", record: saved };
         return { kind: "tombstone", entry };
       }
     }
+    const saved = this.currentStore?.list().find(record => !record.parentAgentId && (record.handle?.toLowerCase() === wanted || record.alias?.toLowerCase() === wanted));
+    if (saved) return { kind: "live", record: this.restoreRecord(saved) };
     return undefined;
   }
 
@@ -870,7 +979,7 @@ export class AgentManager {
   }
 
   listAgents(): AgentRecord[] {
-    return [...this.agents.values()].sort(
+    return [...this.agents.values()].filter(record => !this.currentSessionId || record.rootSessionId === this.currentSessionId).sort(
       (a, b) => b.startedAt - a.startedAt,
     );
   }
@@ -884,6 +993,7 @@ export class AgentManager {
       this.queue = this.queue.filter(q => q.id !== id);
       record.status = "stopped";
       record.completedAt = Date.now();
+      this.persistRecord(record);
       return true;
     }
 
@@ -891,11 +1001,13 @@ export class AgentManager {
     record.abortController?.abort();
     record.status = "stopped";
     record.completedAt = Date.now();
+    this.persistRecord(record);
     return true;
   }
 
   /** Dispose a record's session and remove it from the map. */
   private removeRecord(id: string, record: AgentRecord): void {
+    this.persistRecord(record);
     this.tombstone(record);
     record.session?.dispose?.();
     record.session = undefined;
@@ -973,6 +1085,7 @@ export class AgentManager {
       if (record) {
         record.status = "stopped";
         record.completedAt = Date.now();
+        this.persistRecord(record);
         count++;
       }
     }
@@ -983,6 +1096,7 @@ export class AgentManager {
         record.abortController?.abort();
         record.status = "stopped";
         record.completedAt = Date.now();
+        this.persistRecord(record);
         count++;
       }
     }
@@ -1009,6 +1123,7 @@ export class AgentManager {
     // Clear queue
     this.queue = [];
     for (const record of this.agents.values()) {
+      this.persistRecord(record);
       record.session?.dispose();
     }
     this.agents.clear();

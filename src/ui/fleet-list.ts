@@ -16,7 +16,7 @@ import { hasAgentBadge, renderAgentName } from "../agent-color.js";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentRecord } from "../types.js";
 import { getLifetimeTotal } from "../usage.js";
-import { type AgentActivity, type Theme } from "./agent-widget.js";
+import { type AgentActivity, getAgentRuntime, type Theme } from "./agent-widget.js";
 import { ConversationViewer, VIEWPORT_HEIGHT_PCT } from "./conversation-viewer.js";
 
 /** Widget key for the below-editor fleet list. */
@@ -361,6 +361,7 @@ export class FleetList {
     if (start > 0) lines.push(rightAlign("", theme.fg("dim", `↑ ${start} more`), width));
     for (let a = start; a < start + visible; a++) {
       lines.push(this.renderAgentRow(a + 1, sel, agents[a].record, width, theme));
+      lines.push(truncateToWidth(`    ${theme.fg("accent", getAgentRuntime(agents[a].record))}`, width));
     }
     if (hiddenBelow > 0) lines.push(rightAlign("", theme.fg("dim", `↓ ${hiddenBelow} more`), width));
 

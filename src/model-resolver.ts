@@ -22,6 +22,7 @@ export interface ModelRegistry {
 export function resolveModel(
   input: string,
   registry: ModelRegistry,
+  exactOnly = false,
 ): any | string {
   // Available models (those with auth configured)
   const all = (registry.getAvailable?.() ?? registry.getAll()) as ModelEntry[];
@@ -37,6 +38,8 @@ export function resolveModel(
       if (found) return found;
     }
   }
+
+  if (exactOnly) return `Configured model is unavailable: "${input}". Check settings.json agentModels; refusing to inherit or substitute another provider.`;
 
   // 2. Fuzzy match against available models. Normalize separators so cosmetic
   // punctuation differences still match — e.g. "claude-haiku-4.5" and

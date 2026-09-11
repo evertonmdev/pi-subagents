@@ -49,6 +49,7 @@ import {
   formatMs,
   formatTokens,
   formatTurns,
+  getAgentRuntime,
   getDisplayName,
   getPromptModeLabel,
   SPINNER,
@@ -450,6 +451,7 @@ export default function (pi: ExtensionAPI) {
     // Nested children report only through their owning parent's scoped tools.
     // Keep them out of top-level lifecycle, transcript, notification, and UI channels.
     if (record.parentAgentId) return;
+    if (currentCtx && record.rootSessionId && record.rootSessionId !== currentCtx.sessionManager.getSessionId()) return;
 
     // Emit lifecycle event based on terminal status
     const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
@@ -637,7 +639,7 @@ export default function (pi: ExtensionAPI) {
       widget.setUICtx(ctx.ui);
       fleet.setUICtx(ctx.ui as any);
     }
-    manager.clearCompleted(true);
+    manager.restoreSession(ctx.sessionManager.getSessionId(), ctx.sessionManager.getSessionFile?.(), ctx.sessionManager.getEntries?.() ?? []);
     // Guard mirrors the `!scheduler.isActive()` pattern below: session_start
     // fires once per activation, but a double-bind must not leak listeners.
     if (!rpcHandle) {
@@ -649,7 +651,7 @@ export default function (pi: ExtensionAPI) {
           spawn: spawnTopLevel,
           abort: (id) => {
             const record = manager.getRecord(id);
-            return !record?.parentAgentId && manager.abort(id);
+            return !!record && !record.parentAgentId && manager.abort(id);
           },
         },
       });
@@ -751,7 +753,7 @@ export default function (pi: ExtensionAPI) {
         return { action: "handled" };
       }
 
-      if (record.session) {
+      if (record.session || record.sessionFile) {
         // Both derived from the record's OWN type: a mention names an existing
         // agent, so its frontmatter is what governs — `output_transcript: false`
         // must keep holding, since record.outputFile is the sole gate every
@@ -1046,7 +1048,7 @@ export default function (pi: ExtensionAPI) {
    * outcome. Returns the record, or undefined when the manager refused because
    * the agent is still running (see AgentManager.resume).
    *
-   * Callers must have already established that the record has a session.
+   * Saved records reopen their transcript through the same scoped runner.
    */
   async function startBackgroundResume(
     ctx: ExtensionContext,
@@ -1055,6 +1057,31 @@ export default function (pi: ExtensionAPI) {
     opts: { outputTranscript: boolean; maxTurns?: number; toolCallId?: string },
   ): Promise<AgentRecord | undefined> {
     const id = existing.id;
+    if (!existing.session) {
+      const dispatch = resolveSpawnType(existing.type);
+      if (!dispatch.ok || dispatch.fellBackFrom !== undefined) throw new Error(`Cannot resume saved agent type "${existing.type}"; restore its definition first.`);
+      existing.toolCallId = opts.toolCallId;
+      const { state, callbacks } = createActivityTracker(opts.maxTurns);
+      agentActivity.set(id, state);
+      widget.markRunning(id);
+      const record = await manager.resumePersisted(pi, ctx, id, prompt, {
+        description: existing.description, isBackground: true,
+        maxTurns: opts.maxTurns, isolated: existing.invocation?.isolated,
+        thinkingLevel: existing.invocation?.thinking,
+        onToolActivity: callbacks.onToolActivity,
+        onTextDelta: callbacks.onTextDelta,
+        onAssistantUsage: callbacks.onAssistantUsage,
+        onSessionCreated: session => {
+          state.session = session;
+          if (opts.outputTranscript && existing.outputFile) {
+            existing.outputCleanup = streamToOutputFile(session, existing.outputFile, id, ctx.cwd, session.messages.length);
+          }
+        },
+      });
+      widget.update();
+      fleet.update();
+      return record;
+    }
     const joinMode = resolveJoinMode(defaultJoinMode, true);
     // Assigned unconditionally: the completion notification carries this as
     // `<tool-use-id>`, so a mention-resume (which passes none) has to CLEAR the
@@ -1556,9 +1583,9 @@ Terse command-style prompts produce shallow, generic work.
       // Resolve model from agent config first; tool-call params only fill gaps.
       let model = ctx.model;
       if (resolvedConfig.modelInput) {
-        const resolved = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry);
+        const resolved = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry, customConfig?.modelFromSettings);
         if (typeof resolved === "string") {
-          if (resolvedConfig.modelFromParams) return textResult(resolved);
+          if (resolvedConfig.modelFromParams || customConfig?.modelFromSettings) return textResult(resolved);
           // config-specified: silent fallback to parent
         } else {
           model = resolved;
@@ -1675,7 +1702,22 @@ Terse command-style prompts produce shallow, generic work.
           return textResult(`Agent not found: "${params.resume}". It may have been cleaned up.`);
         }
         if (!existing.session) {
-          return textResult(`Agent "${params.resume}" has no active session to resume.`);
+          try {
+            const dispatch = resolveSpawnType(existing.type);
+            if (!dispatch.ok || dispatch.fellBackFrom !== undefined) return textResult(`Cannot resume saved agent type "${existing.type}"; restore its definition first.`);
+            if (runInBackground) {
+              const record = await startBackgroundResume(ctx, existing, params.prompt, { outputTranscript, maxTurns: effectiveMaxTurns, toolCallId });
+              return textResult(record ? `Agent resumed in background.\nAgent ID: ${record.id}\nUse get_subagent_result to retrieve results.` : `Failed to resume agent "${existing.id}".`);
+            }
+            const record = await manager.resumePersisted(pi, ctx, existing.id, params.prompt, {
+              description: existing.description, isBackground: false, signal,
+              isolated: existing.invocation?.isolated, thinkingLevel: existing.invocation?.thinking,
+              maxTurns: effectiveMaxTurns,
+            });
+            return textResult(record?.status === "error" ? `Agent failed: ${record.error}${partialOutputSuffix(record)}` : record?.result || "No output.");
+          } catch (error) {
+            return textResult(error instanceof Error ? error.message : String(error));
+          }
         }
 
         // Background resume: detached run that notifies on completion, mirroring
@@ -1996,12 +2038,14 @@ Terse command-style prompts produce shallow, generic work.
       } else if (record.status === "error") {
         output += `Error: ${record.error}${partialOutputSuffix(record)}`;
       } else {
+        if (record.error) output += `${record.error}\n\n`;
         output += record.result?.trim() || "No output.";
       }
 
       // Mark result as consumed — suppresses the completion notification
       if (record.status !== "running" && record.status !== "queued") {
         record.resultConsumed = true;
+        manager.persistRecord(record);
         cancelNudge(params.agent_id);
       }
 
@@ -2235,7 +2279,7 @@ Terse command-style prompts produce shallow, generic work.
     const record = await selectItem(ctx.ui, "Running agents", agents, a => {
       const dn = getDisplayName(a.type);
       const dur = formatDuration(a.startedAt, a.completedAt);
-      return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status} · ${dur}`;
+      return `${getAgentRuntime(a)} · ${dn} (${a.description}) · ${a.toolUses} tools · ${a.status} · ${dur}`;
     });
     if (!record) return;
 

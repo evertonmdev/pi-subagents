@@ -776,12 +776,15 @@ export async function runAgent(
   }
 
   // Resolve model: explicit option > config.model > parent model
-  const model = options.model ?? resolveDefaultModel(
-    ctx.model, ctx.modelRegistry, agentConfig?.model,
-  );
+  const model = agentConfig?.modelFromSettings
+    ? resolveDefaultModel(undefined, ctx.modelRegistry, agentConfig.model)
+    : options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.model);
+  if (agentConfig?.modelFromSettings && !model) throw new Error(`Configured agent model is unavailable: "${agentConfig.model}". Check settings.json agentModels; refusing to inherit the parent model.`);
 
   // Resolve thinking level: explicit option > agent config > undefined (inherit)
-  const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking;
+  const thinkingLevel = agentConfig?.modelFromSettings
+    ? agentConfig.thinking ?? options.thinkingLevel
+    : options.thinkingLevel ?? agentConfig?.thinking;
 
   const disallowedSet = agentConfig?.disallowedTools
     ? new Set(agentConfig.disallowedTools)
