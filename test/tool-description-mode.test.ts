@@ -121,6 +121,7 @@ describe("toolDescriptionMode", () => {
       "run_in_background",
       "resume",
       "steer_subagent",
+      "list_subagents",
       'isolation: "worktree"',
       ".pi/agents/",
       "self-contained",

@@ -120,6 +120,7 @@ vi.mock("../src/nested-tools.js", () => ({
     { name: "Agent" },
     { name: "get_subagent_result" },
     { name: "steer_subagent" },
+    { name: "list_subagents" },
   ]),
 }));
 
@@ -349,6 +350,15 @@ describe("agent-runner final output capture", () => {
     await runAgent(ctx, "Explore", "go", { pi, agentId: "a1b2c3d4e5f6" });
 
     expect(session.setSessionName).toHaveBeenCalledWith("Explore#a1b2c3d4");
+  });
+
+  it("uses an explicit intercomName when provided", async () => {
+    const { session } = createSession("NAMED");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi, agentId: "a1b2c3d4e5f6", intercomName: "cozinha-ui" });
+
+    expect(session.setSessionName).toHaveBeenCalledWith("cozinha-ui");
   });
 });
 
@@ -1046,9 +1056,9 @@ describe("agent-runner master tool allowlist", () => {
       configCwd: "/tmp",
     }));
     expect(lastToolsPassed()).toEqual(expect.arrayContaining([
-      "Agent", "get_subagent_result", "steer_subagent",
+      "Agent", "get_subagent_result", "steer_subagent", "list_subagents",
     ]));
-    expect(createAgentSession.mock.calls[0][0].customTools).toHaveLength(3);
+    expect(createAgentSession.mock.calls[0][0].customTools).toHaveLength(4);
   });
 
   it("keeps opt-in nested tools active UNDER EXTENSIONS despite the EXCLUDED-name collision", async () => {
@@ -1072,10 +1082,10 @@ describe("agent-runner master tool allowlist", () => {
     const opts = createAgentSession.mock.calls[0][0];
     // (a) not denied at the registry gate, and passed as customTools.
     expect(opts.excludeTools ?? []).not.toContain("Agent");
-    expect(opts.customTools).toHaveLength(3);
+    expect(opts.customTools).toHaveLength(4);
     // (b) survive the active-set renarrow alongside a real extension tool.
     const active = lastToolsPassed();
-    expect(active).toEqual(expect.arrayContaining(["Agent", "get_subagent_result", "steer_subagent"]));
+    expect(active).toEqual(expect.arrayContaining(["Agent", "get_subagent_result", "steer_subagent", "list_subagents"]));
     expect(active).toContain("ok_ext");
   });
 

@@ -80,6 +80,7 @@ beforeEach(() => {
     spawnAndWait,
     getRecord: (id: string) => records.get(id),
     resume: vi.fn(),
+    listAgents: () => [...records.values()],
   } as any;
 });
 

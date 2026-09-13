@@ -5,6 +5,7 @@
  *   Agent             — LLM-callable: spawn a sub-agent
  *   get_subagent_result  — LLM-callable: check background agent status/result
  *   steer_subagent       — LLM-callable: send a steering message to a running agent
+ *   list_subagents       — LLM-callable: compact roster (id/type/name/description/status), no transcripts
  *
  * Commands:
  *   /agents                 — Interactive agent management menu
@@ -19,6 +20,7 @@ import { abortable } from "./abortable.js";
 import { hasAgentBadge, renderAgentName } from "./agent-color.js";
 import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "./agent-file-toggle.js";
 import { AgentManager } from "./agent-manager.js";
+import { collectAgentRoster, formatAgentRoster } from "./agent-roster.js";
 import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getConfig, getFallbackSubagent, isDefaultsDisabled, NO_FALLBACK, registerAgents, resolveSpawnType, resolveType, setDefaultsDisabled, setFallbackSubagent } from "./agent-types.js";
 import { inChildSessionContext } from "./child-context.js";
@@ -1258,7 +1260,7 @@ Notes:
 - description: 3-5 words (shown in UI). Prompts must be self-contained — the agent has not seen this conversation.
 - Parallel work: one message, multiple Agent calls, run_in_background: true on each. You are notified when background agents finish — never poll or sleep.
 - The result is not shown to the user — summarize it for them. Verify an agent's claimed code changes before reporting work done.
-- resume continues a previous agent by ID; steer_subagent messages a running one.
+- resume continues a previous agent by ID; steer_subagent messages a running one. Call list_subagents before spawning the same type for related work.
 - isolation: "worktree" runs the agent in an isolated git worktree; changes land on a branch.`;
 
   const fullAgentToolDescription = `Launch a new agent to handle complex, multi-step tasks autonomously. Each agent type has specific capabilities and tools available to it.
@@ -1283,6 +1285,8 @@ If the target is already known, use a direct tool — \`read\` for a known path,
 - Use run_in_background for work you don't need immediately. You will be notified when it completes — do NOT poll or sleep waiting for it. Continue with other work or respond to the user instead.
 - Foreground vs background: use foreground (default) when you need the agent's results before you can proceed. Use background when you have genuinely independent work to do in parallel.
 - Use resume with an agent ID to continue a previous agent's work. A new (non-resume) Agent call starts a fresh agent with no memory of prior runs, so the prompt must be self-contained.
+- Before spawning the same specialist type for related work (same workspace, screen, or follow-up), call list_subagents. If a resumable agent matches the label/description, resume it instead of launching a cold agent. Do not fetch transcripts to decide.
+- Set \`name\` on writers you expect to reuse (e.g. "cozinha-ui") so list_subagents and @mentions keep a stable handle.
 - Use steer_subagent to send mid-run messages to a running background agent.
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, etc.), since it is not aware of the user's intent.
 - If an agent's description says it should be used proactively, try to use it without the user having to ask for it first.
@@ -1363,6 +1367,7 @@ Terse command-style prompts produce shallow, generic work.
       "Use Agent with specialized agents when the task matches an agent type's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing — if you delegate research to a subagent, do not also perform the same searches yourself.",
       "For broad codebase exploration or research, spawn Agent with an appropriate subagent_type (e.g. Explore). Otherwise use direct tools (read, grep, find) when the target is already known.",
       "When an agent runs in the background, you will be notified on completion — do not poll or sleep waiting for it. Continue with other work instead.",
+      "Before spawning another agent of the same type for related work, call list_subagents and resume a matching idle/completed agent. Do not read transcripts to decide.",
       "Trust but verify: an agent's summary describes intent, not outcome. When an agent writes or edits code, check the actual changes before reporting work as done.",
     ],
     parameters: Type.Object({
@@ -2058,6 +2063,26 @@ Terse command-style prompts produce shallow, generic work.
       }
 
       return textResult(output);
+    },
+  }));
+
+  pi.registerTool(defineTool({
+    name: SUBAGENT_TOOL_NAMES.LIST,
+    label: "List Agents",
+    description:
+      "Compact roster of this session's subagents: id, type, handle, alias, description, status, resumable, intercom target. No transcripts. Call before spawning the same type for related work; resume a matching idle/completed agent instead of a cold spawn.",
+    promptSnippet: "List subagent labels so you can resume instead of spawning a duplicate specialist",
+    promptGuidelines: [
+      "Call list_subagents before Agent when a specialist of that type may already exist for related work.",
+      "Use the roster labels only. Do not call get_subagent_result with verbose to decide reuse.",
+    ],
+    parameters: Type.Object({}),
+    execute: async () => {
+      const entries = collectAgentRoster({
+        records: manager.listAgents(),
+        tombstones: manager.listTombstones(),
+      });
+      return textResult(formatAgentRoster(entries));
     },
   }));
 

@@ -25,6 +25,15 @@ function getDefaultConfig(name: string): AgentConfig {
 }
 
 describe("buildAgentPrompt", () => {
+  it("appends the intercom directory without wrapping extra tags twice", () => {
+    const config = getDefaultConfig("general-purpose");
+    const prompt = buildAgentPrompt(config, "/workspace", env, undefined, {
+      intercomDirectory: "<intercom_directory>\nYou: intercom to=\"frontend\"\n</intercom_directory>",
+    });
+    expect(prompt).toContain("<intercom_directory>");
+    expect(prompt).toContain('You: intercom to="frontend"');
+  });
+
   it("includes cwd and git info", () => {
     const config = getDefaultConfig("general-purpose");
     const prompt = buildAgentPrompt(config, "/workspace", env);

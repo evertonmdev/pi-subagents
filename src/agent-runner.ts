@@ -38,6 +38,7 @@ export const SUBAGENT_TOOL_NAMES = {
   AGENT: "Agent",
   GET_RESULT: "get_subagent_result",
   STEER: "steer_subagent",
+  LIST: "list_subagents",
 } as const;
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
@@ -399,6 +400,10 @@ export interface RunOptions {
    * frontmatter asks otherwise.
    */
   nested?: boolean;
+  /** Intercom presence name for this child (handle/alias). */
+  intercomName?: string;
+  /** Compact supervisor/peer directory injected into the child system prompt. */
+  intercomDirectory?: string;
   /** Override working directory (e.g. for worktree isolation). */
   cwd?: string;
   /**
@@ -574,6 +579,7 @@ export async function runAgent(
   // Build prompt extras (memory, skill preloading)
   const extras: PromptExtras = {};
   if (options.worktreeBase) extras.worktreeBase = options.worktreeBase;
+  if (options.intercomDirectory) extras.intercomDirectory = options.intercomDirectory;
 
   // Resolve extensions/skills: isolated overrides to false
   const extensions = options.isolated ? false : config.extensions;
@@ -929,7 +935,8 @@ export async function runAgent(
 
   const baseSessionName = agentConfig?.name ?? type;
   session.setSessionName(
-    options.agentId ? `${baseSessionName}#${options.agentId.slice(0, 8)}` : baseSessionName,
+    options.intercomName
+    ?? (options.agentId ? `${baseSessionName}#${options.agentId.slice(0, 8)}` : baseSessionName),
   );
 
   // Bind extensions so that session_start fires and extensions can initialize

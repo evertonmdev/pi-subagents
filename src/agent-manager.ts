@@ -14,6 +14,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AgentRecordStore, decodeAgentRecord } from "./agent-record-store.js";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { childIntercomName, formatIntercomDirectory } from "./agent-roster.js";
 import { assignHandle, handleBase } from "./mention.js";
 import type { AgentInvocation, AgentRecord, AgentTombstone, IsolationMode, MentionResolution, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
@@ -446,6 +447,19 @@ export class AgentManager {
     const promise = runAgent(ctx, type, prompt, {
       pi,
       agentId: id,
+      intercomName: childIntercomName(record),
+      intercomDirectory: formatIntercomDirectory({
+        self: childIntercomName(record),
+        supervisor: (pi as { getSessionName?: () => string }).getSessionName?.()?.trim() || undefined,
+        peers: this.listAgents()
+          .filter((peer) => peer.id !== id && peer.parentAgentId === record.parentAgentId && (peer.status === "running" || peer.status === "queued"))
+          .map((peer) => ({
+            type: peer.type,
+            intercom: childIntercomName(peer),
+            description: peer.description,
+            status: peer.status,
+          })),
+      }),
       model: options.model,
       maxTurns: options.maxTurns,
       isolated: options.isolated,

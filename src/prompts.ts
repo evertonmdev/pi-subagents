@@ -18,6 +18,8 @@ export interface PromptExtras {
    * to stay in the copy.
    */
   worktreeBase?: string;
+  /** Compact supervisor/peer Intercom directory. No transcripts. */
+  intercomDirectory?: string;
 }
 
 /**
@@ -74,6 +76,9 @@ Work only inside it — never in ${extras.worktreeBase}, even if other instructi
   }
   if (extras?.skillCatalog?.length) {
     extraSections.push(formatSkillCatalog(extras.skillCatalog));
+  }
+  if (extras?.intercomDirectory?.trim()) {
+    extraSections.push(extras.intercomDirectory.trim());
   }
   const extrasSuffix = extraSections.length > 0 ? "\n\n" + extraSections.join("\n") : "";
 

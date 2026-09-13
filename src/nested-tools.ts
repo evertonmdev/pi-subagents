@@ -26,6 +26,7 @@ import {
   writeInitialEntry,
 } from "./output-file.js";
 import { getForegroundOutcomeNote, getStatusNote, partialOutputSuffix } from "./status-note.js";
+import { collectAgentRoster, formatAgentRoster, LIST_SUBAGENTS_TOOL } from "./agent-roster.js";
 import type {
   AgentConfig,
   AgentInvocation,
@@ -46,7 +47,7 @@ let maxSubagentDepth = 2;
 export function getMaxSubagentDepth(): number { return maxSubagentDepth; }
 export function setMaxSubagentDepth(n: number): void { maxSubagentDepth = Math.max(0, Math.floor(n)); }
 
-const NESTED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"] as const;
+const NESTED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent", LIST_SUBAGENTS_TOOL] as const;
 
 interface NestedSpawnOptions {
   description: string;
@@ -87,6 +88,7 @@ export interface NestedAgentManager {
   ): Promise<{ id: string; record: AgentRecord }>;
   getRecord(id: string): AgentRecord | undefined;
   resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined>;
+  listAgents(): AgentRecord[];
 }
 
 export interface NestedToolContext {
@@ -403,5 +405,19 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
     },
   });
 
-  return [agentTool, resultTool, steerTool];
+  const listTool = defineTool({
+    name: NESTED_TOOL_NAMES[3],
+    label: "List Nested Agents",
+    description: "Compact roster of nested agents owned by this parent. No transcripts.",
+    parameters: Type.Object({}),
+    execute: async () => {
+      const entries = collectAgentRoster({
+        records: context.manager.listAgents(),
+        parentAgentId: context.parentAgentId,
+      });
+      return textResult(formatAgentRoster(entries));
+    },
+  });
+
+  return [agentTool, resultTool, steerTool, listTool];
 }
