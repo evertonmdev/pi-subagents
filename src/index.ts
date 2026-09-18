@@ -585,6 +585,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const registryEntry = {
+    list: () => manager.listAgents().filter(record => !record.parentAgentId),
     waitForAll: () => manager.waitForAll(),
     hasRunning: () => manager.hasRunning(),
     spawn: spawnTopLevel,
