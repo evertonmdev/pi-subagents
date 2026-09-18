@@ -593,6 +593,33 @@ export default function (pi: ExtensionAPI) {
       const record = manager.getRecord(id);
       return record?.parentAgentId ? undefined : record;
     },
+    // Compatibility API for interactive RPC clients such as Adaptive Harness.
+    // It deliberately reuses the manager's existing record/session instead of
+    // emulating a new Agent spawn.
+    message: async (ref: string, prompt: string) => {
+      if (!currentCtx) throw new Error("No active session");
+      const resolved = manager.resolveMention(ref);
+      if (!resolved || resolved.kind !== "live" || resolved.record.parentAgentId !== undefined) {
+        throw new Error(`Agent "${ref}" is not reachable in this session.`);
+      }
+      const record = resolved.record;
+      if (record.status === "running" || record.status === "queued") {
+        record.resultConsumed = false;
+        if (!manager.steer(record.id, prompt)) throw new Error(`Agent "${ref}" cannot accept messages right now.`);
+        pi.events.emit("subagents:steered", { id: record.id, message: prompt });
+        return { id: record.id, action: "steered" };
+      }
+      if (!record.session && !record.sessionFile) {
+        throw new Error(`Agent "${ref}" has no resumable conversation.`);
+      }
+      const config = getAgentConfig(record.type);
+      const resumed = await startBackgroundResume(currentCtx, record, prompt, {
+        outputTranscript: config?.outputTranscript ?? getOutputTranscriptDefault(),
+        maxTurns: normalizeMaxTurns(config?.maxTurns ?? getDefaultMaxTurns()),
+      });
+      if (!resumed) throw new Error(`Agent "${ref}" is already running.`);
+      return { id: resumed.id, action: "resumed" };
+    },
   };
   const ownsManagerRegistry = (globalThis as any)[MANAGER_KEY] === undefined;
   if (ownsManagerRegistry) {
@@ -715,7 +742,11 @@ export default function (pi: ExtensionAPI) {
     // turn run, so the answer is the model's own, printed as usual. It is the
     // only branch allowed to act headlessly; everything else falls through to
     // the main model exactly as it did before mentions existed.
-    const canDispatchDirectly = ctx.mode === "tui";
+    // Adaptive Harness drives Pi through RPC but still has a real interactive UI.
+    // Treat RPC as directly dispatchable so @mentions preserve the same lifecycle
+    // semantics as native TUI: steer running agents, resume completed agents and
+    // only spawn when the handle has never existed.
+    const canDispatchDirectly = ctx.mode === "tui" || ctx.mode === "rpc";
     if (!canDispatchDirectly && getAgentMentionMode() !== "model") return { action: "continue" };
 
     const mention = parseMention(event.text);
