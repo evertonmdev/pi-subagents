@@ -87,4 +87,66 @@ describe("settings.json agentModels", () => {
     writeFileSync(join(env.dir, ".pi", "settings.json"), JSON.stringify({ agentModels: { backend: null } }));
     expect(() => readAgentModels(env.dir)).toThrow("Invalid agentModels.backend");
   });
+
+  it("reads and resolves agentModels from .pi/harness/codename-models.json with highest precedence", () => {
+    settings({ backend: "xai/grok-4.6:low", frontend: "xai/grok-4.6:low" });
+    const harnessDir = join(env.dir, ".pi", "harness");
+    mkdirSync(harnessDir, { recursive: true });
+    writeFileSync(join(harnessDir, "codename-models.json"), JSON.stringify({
+      agentModels: {
+        backend: "openai-codex/gpt-6-astra:high",
+        quick: "openai-codex/gpt-6-astra:medium",
+      },
+    }));
+
+    const models = readAgentModels(env.dir);
+    expect(models.backend).toBe("openai-codex/gpt-6-astra:high");
+    expect(models.frontend).toBe("xai/grok-4.6:low");
+    expect(models.quick).toBe("openai-codex/gpt-6-astra:medium");
+
+    const agents = loadCustomAgents(env.dir);
+    expect(agents.get("backend")).toMatchObject({ model: "openai-codex/gpt-6-astra", thinking: "high", modelFromSettings: true });
+  });
+
+  it("supports thinking override in model alias (e.g. quick:xhigh)", () => {
+    const config = { name: "my-worker", model: "quick:xhigh" };
+    applyAgentModelSettings(config, { quick: "openai-codex/gpt-6-astra:medium" });
+    expect(config.model).toBe("openai-codex/gpt-6-astra");
+    expect(config.thinking).toBe("xhigh");
+    expect(config.modelFromSettings).toBe(true);
+  });
+
+  it("dispatches subagent when model is a codename via Agent({ model: 'quick' })", async () => {
+    const harnessDir = join(env.dir, ".pi", "harness");
+    mkdirSync(harnessDir, { recursive: true });
+    writeFileSync(join(harnessDir, "codename-models.json"), JSON.stringify({
+      agentModels: {
+        quick: "xai/grok-4.6:low",
+      },
+    }));
+
+    const boot = makePi(); extension(boot.pi);
+    shutdown = () => boot.lifecycle.get("session_shutdown")();
+    vi.mocked(runAgent).mockResolvedValue({ responseText: "done", aborted: false, steered: false, session: { dispose() {} } as never });
+    const registry = {
+      getAvailable: () => [grok, astra],
+      getAll: () => [grok, astra],
+      find: (provider: string, id: string) => [grok, astra].find(m => m.provider === provider && m.id === id),
+    };
+
+    await boot.tools.get("Agent").execute(
+      "call",
+      { subagent_type: "unmapped", description: "Quick task", prompt: "Run quick", model: "quick" },
+      undefined,
+      undefined,
+      ctx({ model: astra, modelRegistry: registry, cwd: env.dir }),
+    );
+
+    expect(runAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      "unmapped",
+      "Run quick",
+      expect.objectContaining({ model: grok, thinkingLevel: "low" }),
+    );
+  });
 });

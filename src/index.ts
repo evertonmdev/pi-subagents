@@ -1615,14 +1615,15 @@ Terse command-style prompts produce shallow, generic work.
       // Get agent config (if any)
       const customConfig = getAgentConfig(subagentType);
 
-      const resolvedConfig = resolveAgentInvocationConfig(customConfig, params);
+      const resolvedConfig = resolveAgentInvocationConfig(customConfig, params, ctx.cwd);
 
       // Resolve model from agent config first; tool-call params only fill gaps.
       let model = ctx.model;
       if (resolvedConfig.modelInput) {
-        const resolved = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry, customConfig?.modelFromSettings);
+        const fromSettings = customConfig?.modelFromSettings || resolvedConfig.modelFromSettings;
+        const resolved = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry, fromSettings);
         if (typeof resolved === "string") {
-          if (resolvedConfig.modelFromParams || customConfig?.modelFromSettings) return textResult(resolved);
+          if (resolvedConfig.modelFromParams || fromSettings) return textResult(resolved);
           // config-specified: silent fallback to parent
         } else {
           model = resolved;

@@ -88,6 +88,32 @@ describe("readEnabledModels", () => {
     expect(readEnabledModels(projectDir)).toEqual(["anthropic/claude-sonnet-4-6"]);
   });
 
+  it("reads enabledModels from .pi/harness/codename-models.json with highest priority", () => {
+    writeProject({ enabledModels: ["google/gemma-4-31b-it"] });
+    mkdirSync(join(projectDir, ".pi", "harness"), { recursive: true });
+    writeFileSync(join(projectDir, ".pi", "harness", "codename-models.json"), JSON.stringify({
+      enabledModels: ["anthropic/claude-sonnet-4-6", "anthropic/claude-haiku-4-5"],
+    }));
+
+    expect(readEnabledModels(projectDir)).toEqual([
+      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-haiku-4-5",
+    ]);
+  });
+
+  it("falls back to HARNESS_CODENAME_MODELS when project settings and harness files are missing", () => {
+    const defaultHarnessFile = join(agentDir, "default-codename-models.json");
+    writeFileSync(defaultHarnessFile, JSON.stringify({
+      enabledModels: ["anthropic/claude-opus-4-6"],
+    }));
+    process.env.HARNESS_CODENAME_MODELS = defaultHarnessFile;
+    try {
+      expect(readEnabledModels(projectDir)).toEqual(["anthropic/claude-opus-4-6"]);
+    } finally {
+      delete process.env.HARNESS_CODENAME_MODELS;
+    }
+  });
+
   it("returns undefined when global JSON is corrupt (try/catch swallow)", () => {
     writeFileSync(globalFile(), "not json {{{");
     expect(readEnabledModels(projectDir)).toBeUndefined();

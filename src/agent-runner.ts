@@ -2,9 +2,10 @@
  * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext, LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
 import {
@@ -162,6 +163,45 @@ export function parseExtensionsSpec(
 }
 
 /**
+ * Locate the harness Jev tool router extension if available.
+ */
+export function resolveToolRoutingExtension(cwd: string): string | undefined {
+  // 1. Explicit override from HARNESS_CORE_OVERRIDES
+  try {
+    const raw = process.env.HARNESS_CORE_OVERRIDES;
+    if (raw) {
+      const overrides = JSON.parse(raw);
+      if (typeof overrides["tool-routing"] === "string") {
+        let p = overrides["tool-routing"].trim();
+        if (p.startsWith("local:")) p = p.slice("local:".length);
+        if (p && existsSync(p)) return p;
+      }
+    }
+  } catch { /* diagnostic/fallback */ }
+
+  // 2. Extracted bundle path from HARNESS_RUNTIME_MANIFEST
+  if (process.env.HARNESS_RUNTIME_MANIFEST) {
+    const root = dirname(process.env.HARNESS_RUNTIME_MANIFEST);
+    const bundled = join(root, "extensions", "tool-routing", "index.ts");
+    if (existsSync(bundled)) return bundled;
+  }
+
+  // 3. Harness project root (.pi/extensions/tool-routing/index.ts)
+  const harnessRoot = process.env.HARNESS_PROJECT_ROOT;
+  if (harnessRoot) {
+    const p = join(harnessRoot, ".pi", "extensions", "tool-routing", "index.ts");
+    if (existsSync(p)) return p;
+  }
+
+  // 4. Project-local .pi/extensions/tool-routing/index.ts
+  const localProject = join(cwd, ".pi", "extensions", "tool-routing", "index.ts");
+  if (existsSync(localProject)) return localProject;
+
+  return undefined;
+}
+
+
+/**
  * Parse raw `ext:` selector strings (from the `tools:` CSV) into the set of
  * extension names to keep loaded and a per-extension tool-narrowing map.
  *
@@ -268,10 +308,28 @@ export function installExtensionToolScope(
     return keep;
   };
 
+  let initialized = false;
   const renarrow = () => {
     const allowed = inScope();
     const next = session.getAllTools().map((t) => t.name).filter((n) => allowed.has(n));
     const current = session.getActiveToolNames();
+
+    const hasToolRouter = loader.getExtensions().extensions.some(
+      (e) => extensionCanonicalNames(e.path).includes("tool-routing"),
+    );
+
+    if (hasToolRouter && initialized) {
+      // An active tool router narrows schemas per turn from the allowed baseline.
+      // Do not overwrite its selection on turn_end unless an out-of-scope tool became active.
+      const hasDisallowed = current.some((n) => !allowed.has(n));
+      if (hasDisallowed) {
+        session.setActiveToolsByName(current.filter((n) => allowed.has(n)));
+        return;
+      }
+      return;
+    }
+
+    initialized = true;
     // setActiveToolsByName unconditionally rebuilds the system prompt, so skip
     // the no-op that steady-state turns would otherwise pay for every turn.
     if (next.length !== current.length || next.some((n, i) => n !== current[i])) {
@@ -677,7 +735,20 @@ export async function runAgent(
   // It's only needed when we're neither loading everything without excludes
   // (`extensions: true` or a `"*"` wildcard) nor nothing (`noExtensions`).
   const loadAll = extensions === true || extensionsSpec?.wildcard === true;
-  const additionalExtensionPaths = extensionsSpec?.paths.length ? extensionsSpec.paths : undefined;
+  const additionalPaths = extensionsSpec?.paths.length ? [...extensionsSpec.paths] : [];
+
+  // Unless extensions are completely disabled (e.g. isolated: true) or explicitly
+  // excluded (exclude_extensions: [tool-routing]), child subagents inherit the
+  // harness tool router so their candidate tools are filtered by Jev per turn.
+  if (!noExtensions && !excludeNames.has("tool-routing")) {
+    const routerPath = resolveToolRoutingExtension(configCwd);
+    if (routerPath && !additionalPaths.includes(routerPath)) {
+      additionalPaths.push(routerPath);
+      keepNames.add("tool-routing");
+    }
+  }
+
+  const additionalExtensionPaths = additionalPaths.length ? additionalPaths : undefined;
   // Pre-filter discovered set, captured by the override — the exclude-typo warning
   // must compare against this, not the surviving set (absence from survivors is
   // an exclude *succeeding*).
@@ -757,11 +828,12 @@ export async function runAgent(
       }
     }
   }
-  if (keepNames.size > 0 || extNames.size > 0) {
+  const requestedNames = extensionsSpec?.names ?? new Set<string>();
+  if (requestedNames.size > 0 || extNames.size > 0) {
     const survivingNames = new Set(
       loader.getExtensions().extensions.flatMap((e) => extensionCanonicalNames(e.path)),
     );
-    for (const name of keepNames) {
+    for (const name of requestedNames) {
       if (!survivingNames.has(name)) {
         options.onToolActivity?.({
           type: "end",
@@ -1034,7 +1106,10 @@ export async function runAgent(
   // on counts as this run's output (a fresh session, so usually 0).
   const startLen = session.messages.length;
   try {
-    await session.prompt(effectivePrompt);
+    await runInChildSessionContext(
+      { isChild: true, agentId: options.agentId, type },
+      () => session.prompt(effectivePrompt),
+    );
   } finally {
     unsubTurns();
     collector.unsubscribe();
@@ -1084,7 +1159,11 @@ export async function resumeAgent(
     : () => {};
 
   try {
-    await session.prompt(prompt);
+    const sessionName = (session as any)._sessionName ?? (session as any).sessionName;
+    await runInChildSessionContext(
+      { isChild: true, agentId: sessionName, type: sessionName },
+      () => session.prompt(prompt),
+    );
   } finally {
     collector.unsubscribe();
     unsubEvents();

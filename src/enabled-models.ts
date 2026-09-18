@@ -37,15 +37,26 @@ export interface ModelRegistryRef {
   getAvailable?(): unknown[];
 }
 
-/** Paths to pi's settings.json files: [project, global] (project takes precedence). */
-function settingsPaths(cwd: string): [project: string, global: string] {
-  return [
-    join(cwd, ".pi", "settings.json"),
-    join(getAgentDir(), "settings.json"),
+/** Paths to pi's settings and harness configuration files in priority order. */
+function settingsPaths(cwd: string): string[] {
+  const paths: string[] = [
+    join(cwd, ".pi", "harness", "codename-models.json"),
   ];
+  if (process.env.HARNESS_PROJECT_ROOT && process.env.HARNESS_PROJECT_ROOT !== cwd) {
+    paths.push(join(process.env.HARNESS_PROJECT_ROOT, ".pi", "harness", "codename-models.json"));
+  }
+  paths.push(join(cwd, ".pi", "settings.json"));
+  if (process.env.HARNESS_PROJECT_ROOT && process.env.HARNESS_PROJECT_ROOT !== cwd) {
+    paths.push(join(process.env.HARNESS_PROJECT_ROOT, ".pi", "settings.json"));
+  }
+  if (process.env.HARNESS_CODENAME_MODELS) {
+    paths.push(process.env.HARNESS_CODENAME_MODELS);
+  }
+  paths.push(join(getAgentDir(), "settings.json"));
+  return paths;
 }
 
-/** Read `enabledModels` from a single settings.json file. Undefined when missing or absent. */
+/** Read `enabledModels` from a single settings.json or codename-models.json file. Undefined when missing or absent. */
 function readField(path: string): string[] | undefined {
   if (!existsSync(path)) return undefined;
   try {
@@ -58,14 +69,17 @@ function readField(path: string): string[] | undefined {
 }
 
 /**
- * Read enabledModels from pi's settings — project-local overrides global.
+ * Read enabledModels from pi settings or harness codename-models — project-local overrides global.
  * Mirrors pi's SettingsManager deep-merge for the `enabledModels` field
  * (and matches our own loadSettings precedence in src/settings.ts).
  * Returns undefined when neither file has the field.
  */
 export function readEnabledModels(cwd: string): string[] | undefined {
-  const [project, global] = settingsPaths(cwd);
-  return readField(project) ?? readField(global);
+  for (const path of settingsPaths(cwd)) {
+    const field = readField(path);
+    if (field !== undefined) return field;
+  }
+  return undefined;
 }
 
 /**
@@ -75,15 +89,15 @@ export function readEnabledModels(cwd: string): string[] | undefined {
  * Patterns without a slash, with glob characters, or with a `:thinking`
  * suffix are silently dropped. See module-level docstring for rationale.
  *
- * Cache: keyed on JSON.stringify(patterns) + mtime/size of *both*
- * project and global settings.json files. Re-resolves when either file
+ * Cache: keyed on JSON.stringify(patterns) + mtime/size of
+ * project and global settings and harness config files. Re-resolves when any file
  * changes or the patterns argument differs.
  *
  * Returns undefined when no patterns are provided or no patterns match
  * (scope check becomes a no-op at the call site).
  */
 
-// Module-level cache — invalidated when either settings.json changes or patterns differ.
+// Module-level cache — invalidated when settings/harness files change or patterns differ.
 let cachedAllowed: Set<string> | undefined;
 let cachedHash = "";
 let cachedPatternsKey = "";
@@ -103,10 +117,9 @@ export function resolveEnabledModels(
   registry: ModelRegistryRef,
   cwd: string = process.cwd(),
 ): Set<string> | undefined {
-  // Fast path: check cache (stat both project and global settings.json files)
+  // Fast path: check cache (stat project, harness and global config files)
   const patternsKey = JSON.stringify(patterns);
-  const [project, global] = settingsPaths(cwd);
-  const fileHash = `${hashOf(project)};${hashOf(global)}`;
+  const fileHash = settingsPaths(cwd).map(p => hashOf(p)).join(";");
 
   if (fileHash === cachedHash && patternsKey === cachedPatternsKey) {
     return cachedAllowed;

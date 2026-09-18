@@ -1,3 +1,4 @@
+import { readAgentModels, resolveModelCodename } from "./agent-model-settings.js";
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "./types.js";
 
 interface AgentInvocationParams {
@@ -13,9 +14,11 @@ interface AgentInvocationParams {
 export function resolveAgentInvocationConfig(
   agentConfig: AgentConfig | undefined,
   params: AgentInvocationParams,
+  cwd?: string,
 ): {
   modelInput?: string;
   modelFromParams: boolean;
+  modelFromSettings: boolean;
   thinking?: ThinkingLevel;
   maxTurns?: number;
   inheritContext: boolean;
@@ -23,10 +26,32 @@ export function resolveAgentInvocationConfig(
   isolated: boolean;
   isolation?: IsolationMode;
 } {
+  let modelInput = agentConfig?.model ?? params.model;
+  const modelFromParams = agentConfig?.model == null && params.model != null;
+  let modelFromSettings = agentConfig?.modelFromSettings ?? false;
+  let thinking = (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined;
+
+  if (cwd && modelInput) {
+    try {
+      const models = readAgentModels(cwd);
+      const resolvedCodename = resolveModelCodename(modelInput, models);
+      if (resolvedCodename) {
+        modelInput = resolvedCodename.model;
+        if (resolvedCodename.thinking && (!params.thinking || !modelFromParams)) {
+          thinking = resolvedCodename.thinking;
+        }
+        modelFromSettings = true;
+      }
+    } catch {
+      /* ignore read errors here; resolveModel will handle unavailable or invalid targets */
+    }
+  }
+
   return {
-    modelInput: agentConfig?.model ?? params.model,
-    modelFromParams: agentConfig?.model == null && params.model != null,
-    thinking: (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined,
+    modelInput,
+    modelFromParams,
+    modelFromSettings,
+    thinking,
     maxTurns: agentConfig?.maxTurns ?? params.max_turns,
     inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,
     runInBackground: agentConfig?.runInBackground ?? params.run_in_background ?? false,

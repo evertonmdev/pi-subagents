@@ -217,12 +217,13 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       }
 
       const config = getAgentConfigIn(registry, resolvedType);
-      const invocation = resolveAgentInvocationConfig(config, params);
+      const invocation = resolveAgentInvocationConfig(config, params, context.configCwd);
       let model = ctx.model;
       if (invocation.modelInput) {
-        const resolvedModel = resolveModel(invocation.modelInput, ctx.modelRegistry, config?.modelFromSettings);
+        const fromSettings = config?.modelFromSettings || invocation.modelFromSettings;
+        const resolvedModel = resolveModel(invocation.modelInput, ctx.modelRegistry, fromSettings);
         if (typeof resolvedModel === "string") {
-          if (invocation.modelFromParams || config?.modelFromSettings) return textResult(resolvedModel, true);
+          if (invocation.modelFromParams || fromSettings) return textResult(resolvedModel, true);
         } else {
           model = resolvedModel;
         }
