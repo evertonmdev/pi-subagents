@@ -179,6 +179,30 @@ describe("messaging a running agent", () => {
   });
 });
 
+describe("RPC interactive mention lifecycle", () => {
+  it("resumes an existing completed agent instead of spawning a duplicate", async () => {
+    const { lifecycle, tools } = boot();
+    const session = fakeSession();
+    finishedRun(session);
+    vi.mocked(resumeAgent).mockResolvedValue({ text: "continued answer", failure: undefined } as any);
+
+    await spawnBackground(tools);
+    await flush();
+    vi.mocked(runAgent).mockClear();
+
+    const rpcCtx = ctx({ mode: "rpc", hasUI: true });
+    const result = await lifecycle.get("input")(
+      { type: "input", text: "@explore continue from before", source: "interactive" },
+      rpcCtx,
+    );
+
+    expect(result).toEqual({ action: "handled" });
+    expect(resumeAgent).toHaveBeenCalledWith(session, "continue from before", expect.anything());
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(rpcCtx.ui.notify).toHaveBeenCalledWith("Resuming @explore", "info");
+  });
+});
+
 describe("messaging a finished agent", () => {
   it("resumes it from its session in the background", async () => {
     const { lifecycle, tools } = boot();
