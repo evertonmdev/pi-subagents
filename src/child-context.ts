@@ -4,6 +4,12 @@ export interface ChildSessionInfo {
   isChild: true;
   agentId?: string;
   type?: string;
+  /** Explicit .md tool declaration, captured for opt-in extensions at load time. */
+  toolDeclaration?: {
+    sourcePath: string;
+    selectors: readonly string[];
+    denied: readonly string[];
+  };
 }
 
 /**
@@ -40,4 +46,3 @@ export function runInChildSessionContext<T>(
 if (typeof globalThis !== "undefined") {
   (globalThis as any)[Symbol.for("pi-subagents:child-info")] = getChildSessionInfo;
 }
-

@@ -5,7 +5,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext, LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
 import {
@@ -737,6 +736,26 @@ export async function runAgent(
   const loadAll = extensions === true || extensionsSpec?.wildcard === true;
   const additionalPaths = extensionsSpec?.paths.length ? [...extensionsSpec.paths] : [];
 
+  // CLI --extension resources are not rediscovered by a child's resource loader.
+  // Resolve the declared permission extension from the same harness runtime;
+  // never silently run a policy-bearing agent without its enforcement hooks.
+  const requiresPermissions = !noExtensions && !excludeNames.has("pi-permission-system")
+    && (loadAll || keepNames.has("pi-permission-system"));
+  if (requiresPermissions && process.env.HARNESS_RUNTIME_MANIFEST) {
+    const overrides = JSON.parse(process.env.HARNESS_CORE_OVERRIDES || "{}") as Record<string, string>;
+    const override = overrides["permission-system"];
+    const permissionPath = override?.startsWith("local:")
+      ? override.slice("local:".length)
+      : override && !override.startsWith("npm:") ? override
+        : !override ? join(dirname(process.env.HARNESS_RUNTIME_MANIFEST), "extensions", "pi-permission-system", "src", "index.ts")
+          : undefined;
+    if (permissionPath) {
+      if (!existsSync(permissionPath)) throw new Error("Required pi-permission-system extension is unavailable; refusing to run agent.");
+      if (!additionalPaths.includes(permissionPath)) additionalPaths.push(permissionPath);
+      keepNames.add("pi-permission-system");
+    }
+  }
+
   // Unless extensions are completely disabled (e.g. isolated: true) or explicitly
   // excluded (exclude_extensions: [tool-routing]), child subagents inherit the
   // harness tool router so their candidate tools are filtered by Jev per turn.
@@ -781,7 +800,24 @@ export async function runAgent(
     systemPromptOverride: () => systemPrompt,
     appendSystemPromptOverride: () => [],
   });
-  await runInChildSessionContext(() => loader.reload());
+  const childInfo = {
+    isChild: true as const, agentId: options.agentId, type,
+    toolDeclaration: agentConfig?.sourcePath ? {
+      sourcePath: agentConfig.sourcePath,
+      selectors: [...(agentConfig.extSelectors ?? [])],
+      denied: [...(agentConfig.disallowedTools ?? [])],
+    } : undefined,
+  };
+  await runInChildSessionContext(childInfo, () => loader.reload());
+
+  if (requiresPermissions && process.env.HARNESS_RUNTIME_MANIFEST) {
+    const permissionExtension = loader.getExtensions().extensions.find(
+      (extension) => extensionCanonicalNames(extension.path).includes("pi-permission-system"),
+    );
+    if (!permissionExtension?.handlers.get("tool_call")?.length) {
+      throw new Error("Required pi-permission-system tool_call guard did not load; refusing to run agent.");
+    }
+  }
 
   // Plain entries in `tools:` are expected to be built-in names (extension tools
   // go through `ext:`), so an unknown name there is unambiguously a typo. Previously
@@ -973,6 +1009,11 @@ export async function runAgent(
         })
       : SessionManager.inMemory(effectiveCwd);
 
+  // Permission identity is runtime metadata, not an optional tag in the prompt.
+  if (requiresPermissions && process.env.HARNESS_RUNTIME_MANIFEST) {
+    sessionManager.appendCustomEntry("active_agent", { name: agentConfig?.name ?? type });
+  }
+
   // Pi 0.80.8 replaced createAgentSession's modelRegistry option with
   // modelRuntime, but ExtensionContext still exposes only the registry facade.
   // Pass both so the full supported Pi range retains the parent's providers.
@@ -1003,7 +1044,7 @@ export async function runAgent(
     sessionOpts.thinkingLevel = thinkingLevel;
   }
 
-  const { session } = await runInChildSessionContext(() => createAgentSession(sessionOpts));
+  const { session } = await runInChildSessionContext(childInfo, () => createAgentSession(sessionOpts));
 
   const baseSessionName = agentConfig?.name ?? type;
   session.setSessionName(

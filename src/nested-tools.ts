@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { abortable } from "./abortable.js";
+import { collectAgentRoster, formatAgentRoster, LIST_SUBAGENTS_TOOL } from "./agent-roster.js";
 import {
   buildAgentRegistry,
   getAgentConfigIn,
@@ -26,7 +27,6 @@ import {
   writeInitialEntry,
 } from "./output-file.js";
 import { getForegroundOutcomeNote, getStatusNote, partialOutputSuffix } from "./status-note.js";
-import { collectAgentRoster, formatAgentRoster, LIST_SUBAGENTS_TOOL } from "./agent-roster.js";
 import type {
   AgentConfig,
   AgentInvocation,

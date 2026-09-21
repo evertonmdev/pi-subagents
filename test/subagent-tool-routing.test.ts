@@ -1,20 +1,22 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installExtensionToolScope,
   resolveToolRoutingExtension,
   runAgent,
 } from "../src/agent-runner.js";
-import { getChildSessionInfo, inChildSessionContext, runInChildSessionContext } from "../src/child-context.js";
 import { registerAgents } from "../src/agent-types.js";
+import { getChildSessionInfo, inChildSessionContext, runInChildSessionContext } from "../src/child-context.js";
 
 const {
   createAgentSession,
   defaultResourceLoaderCtor,
   loaderExtensionsRef,
+  loadedChildInfo,
 } = vi.hoisted(() => ({
+  loadedChildInfo: vi.fn(),
   createAgentSession: vi.fn(),
   defaultResourceLoaderCtor: vi.fn(),
   loaderExtensionsRef: {
@@ -36,6 +38,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
     }
 
     async reload() {
+      loadedChildInfo(getChildSessionInfo());
       if (this.opts.noExtensions) {
         loaderExtensionsRef.current = { extensions: [], errors: [], runtime: {} };
         return;
@@ -70,6 +73,7 @@ describe("subagent tool routing resolution and inheritance", () => {
     tmp = mkdtempSync(join(tmpdir(), "subagent-routing-"));
     loaderExtensionsRef.current = { extensions: [], errors: [], runtime: {} };
     defaultResourceLoaderCtor.mockClear();
+    loadedChildInfo.mockClear();
     createAgentSession.mockReset();
     createAgentSession.mockResolvedValue({
       session: {
@@ -156,6 +160,27 @@ describe("subagent tool routing resolution and inheritance", () => {
 
     const ctorArgs = defaultResourceLoaderCtor.mock.calls[0][0];
     expect(ctorArgs.additionalExtensionPaths).toContain(routerPath);
+  });
+
+  it("passes resolved Markdown permissions to extension loading without leaking to root", async () => {
+    const sourcePath = join(tmp, ".pi/agents/db.md");
+    registerAgents(new Map([["db", {
+      name: "db", description: "database", sourcePath,
+      builtinToolNames: ["read"], extSelectors: ["ext:supabase"],
+      disallowedTools: ["supabase_run_readonly_query"], extensions: true,
+      skills: false, systemPrompt: "inspect", promptMode: "replace",
+    }]]));
+    await runAgent({ cwd: tmp, getSystemPrompt: () => "system",
+      model: { id: "test", provider: "test" }, modelRegistry: { find: () => undefined },
+    } as any, "db", "inspect", {
+      pi: { exec: async () => ({ code: 0, stdout: "", stderr: "" }) } as any,
+      agentId: "database-child",
+    });
+    expect(loadedChildInfo).toHaveBeenCalledWith({
+      isChild: true, agentId: "database-child", type: "db",
+      toolDeclaration: { sourcePath, selectors: ["ext:supabase"], denied: ["supabase_run_readonly_query"] },
+    });
+    expect(getChildSessionInfo()).toBeUndefined();
   });
 
   it("runAgent does NOT inject tool-routing when isolated: true", async () => {
