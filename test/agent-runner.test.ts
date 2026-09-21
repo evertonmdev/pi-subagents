@@ -1735,24 +1735,17 @@ describe("agent-runner extension allowlist", () => {
     expect(tools).toContain("mcp_call");
   });
 
-  it("warns but proceeds when a bare name matches no loaded extension", async () => {
+  it("refuses to start when a declared name matches no loaded extension", async () => {
     setupArrayAgent(["mcp", "typo"]);
     withExtensions({ "/ext/mcp.ts": ["mcp_tool"] });
     const { session } = createSession("OK");
     createAgentSession.mockResolvedValue({ session });
     const onToolActivity = vi.fn();
 
-    const result = await runAgent(ctx, "Explore", "go", { pi, onToolActivity });
-
-    expect(result.responseText).toBe("OK");
-    expect(onToolActivity).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolName: expect.stringContaining('extension-error:extension "typo"'),
-      }),
-    );
+    await expect(runAgent(ctx, "Explore", "go", { pi, onToolActivity })).rejects.toThrow(/Declared extensions failed to load: typo/);
   });
 
-  it("warns but proceeds when a path entry fails to load", async () => {
+  it("refuses to start when a declared path fails to load", async () => {
     setupArrayAgent(["/abs/missing.ts"]);
     // Not pre-registered → the mock loader records a load error; the path's
     // canonical name ("missing") is what the unmatched-name check reports.
@@ -1760,14 +1753,7 @@ describe("agent-runner extension allowlist", () => {
     createAgentSession.mockResolvedValue({ session });
     const onToolActivity = vi.fn();
 
-    const result = await runAgent(ctx, "Explore", "go", { pi, onToolActivity });
-
-    expect(result.responseText).toBe("OK");
-    expect(onToolActivity).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolName: expect.stringContaining('extension-error:extension "missing"'),
-      }),
-    );
+    await expect(runAgent(ctx, "Explore", "go", { pi, onToolActivity })).rejects.toThrow(/Declared extensions failed to load: missing/);
   });
 
   it("matches `extensions: [Mcp]` against `mcp.ts` (case-insensitive)", async () => {

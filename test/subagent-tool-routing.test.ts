@@ -178,6 +178,7 @@ describe("subagent tool routing resolution and inheritance", () => {
     });
     expect(loadedChildInfo).toHaveBeenCalledWith({
       isChild: true, agentId: "database-child", type: "db",
+      allowedTools: expect.any(Function),
       toolDeclaration: { sourcePath, selectors: ["ext:supabase"], denied: ["supabase_run_readonly_query"] },
     });
     expect(getChildSessionInfo()).toBeUndefined();
@@ -264,6 +265,18 @@ describe("subagent tool routing resolution and inheritance", () => {
 });
 
 describe("installExtensionToolScope coordination with tool-routing", () => {
+  it("exposes late MCP registrations to the router without widening the declaration", () => {
+    const tools = new Map();
+    const session: any = { getAllTools: () => [{ name: "read" }], getActiveToolNames: () => ["read"],
+      setActiveToolsByName: vi.fn(), subscribe: vi.fn(), agent: {} };
+    const allowed = installExtensionToolScope(session, {
+      loader: { getExtensions: () => ({ extensions: [{ path: "/ext/mcp.ts", tools }] }) } as any,
+      toolNames: ["read"], disallowedSet: new Set(["forbidden"]), extNames: new Set(["mcp"]),
+      narrowing: new Map(), nestedToolNames: new Set(),
+    });
+    tools.set("mcp_query", {}); tools.set("forbidden", {});
+    expect(allowed()).toEqual(new Set(["read", "mcp_query"]));
+  });
   it("initial renarrow sets all allowed tools, and turn_end preserves router narrowing", () => {
     let activeTools = ["read", "write", "bash"];
     let turnEndCallback: ((event: any) => void) | undefined;

@@ -18,7 +18,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType } from "./agent-types.js";
-import { runInChildSessionContext } from "./child-context.js";
+import { runInChildSessionContext, type ChildSessionInfo } from "./child-context.js";
 import { buildParentContext, extractText } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
@@ -118,7 +118,12 @@ function extensionPackageName(extPath: string): string | undefined {
 export function extensionCanonicalNames(extPath: string): string[] {
   const canonical = extensionCanonicalName(extPath);
   const pkg = extensionPackageName(extPath);
-  return pkg && pkg !== canonical ? [canonical, pkg] : [canonical];
+  const names = pkg && pkg !== canonical ? [canonical, pkg] : [canonical];
+  // The harness calls this capability `mcp` whether supplied by its wrapper
+  // or by the installed pi-mcp-adapter package. Use the same aliases for
+  // loading, tool opt-in, exclusions and required-extension validation.
+  if (names.includes("pi-mcp-adapter") || names.includes("mcp-adapter")) names.push("mcp");
+  return [...new Set(names)];
 }
 
 /**
@@ -275,7 +280,7 @@ export function installExtensionToolScope(
     /** Opt-in nested-delegation tool names to keep active despite the EXCLUDED strip. */
     nestedToolNames: Set<string>;
   },
-): void {
+): () => Set<string> {
   const { loader, toolNames, disallowedSet, extNames, narrowing, nestedToolNames } = ctx;
 
   // The names allowed right now. Mirrors the `ext:` opt-in flip: when any `ext:`
@@ -354,6 +359,7 @@ export function installExtensionToolScope(
     }
     return priorBeforeToolCall?.(context, signal);
   };
+  return inScope;
 }
 
 /** Default max turns. undefined = unlimited (no turn limit). */
@@ -724,6 +730,7 @@ export async function runAgent(
     ? parseExtensionsSpec(extensions, configCwd)
     : undefined;
   const keepNames = extensionsSpec?.names ?? new Set<string>();
+  const requiredNames = new Set(keepNames);
   // `exclude_extensions:` is a denylist applied AFTER the include set — exclude wins.
   // Plain canonical names only (case-insensitive). Note: excluded extensions'
   // factories still run once during reload() (see comment above) — exclusion
@@ -735,6 +742,22 @@ export async function runAgent(
   // (`extensions: true` or a `"*"` wildcard) nor nothing (`noExtensions`).
   const loadAll = extensions === true || extensionsSpec?.wildcard === true;
   const additionalPaths = extensionsSpec?.paths.length ? [...extensionsSpec.paths] : [];
+
+  // Named declarations must resolve against the same explicit resources as the
+  // parent. Filter paths before loading: excluded extension code must not run.
+  if (!noExtensions && process.env.HARNESS_EXTENSION_PATHS) {
+    const paths: unknown = JSON.parse(process.env.HARNESS_EXTENSION_PATHS);
+    if (!Array.isArray(paths) || paths.some(path => typeof path !== "string")) {
+      throw new Error("Invalid harness extension resource paths");
+    }
+    for (const path of paths as string[]) {
+      const names = extensionCanonicalNames(path);
+      if (names.some(name => excludeNames.has(name))) continue;
+      if (!loadAll && !names.some(name => keepNames.has(name))) continue;
+      if (!existsSync(path)) throw new Error(`Declared extension resource is unavailable: ${path}`);
+      if (!additionalPaths.includes(path)) additionalPaths.push(path);
+    }
+  }
 
   // CLI --extension resources are not rediscovered by a child's resource loader.
   // Resolve the declared permission extension from the same harness runtime;
@@ -800,7 +823,7 @@ export async function runAgent(
     systemPromptOverride: () => systemPrompt,
     appendSystemPromptOverride: () => [],
   });
-  const childInfo = {
+  const childInfo: ChildSessionInfo = {
     isChild: true as const, agentId: options.agentId, type,
     toolDeclaration: agentConfig?.sourcePath ? {
       sourcePath: agentConfig.sourcePath,
@@ -809,6 +832,12 @@ export async function runAgent(
     } : undefined,
   };
   await runInChildSessionContext(childInfo, () => loader.reload());
+
+  if (!noExtensions) {
+    const loaded = new Set(loader.getExtensions().extensions.flatMap(extension => extensionCanonicalNames(extension.path)));
+    const missing = [...requiredNames].filter(name => !excludeNames.has(name) && !loaded.has(name));
+    if (missing.length) throw new Error(`Declared extensions failed to load: ${missing.join(", ")}. Refusing to start an incomplete agent.`);
+  }
 
   if (requiresPermissions && process.env.HARNESS_RUNTIME_MANIFEST) {
     const permissionExtension = loader.getExtensions().extensions.find(
@@ -1072,7 +1101,7 @@ export async function runAgent(
   // handled below by re-deriving scope from the loader's live extension maps —
   // `registerTool` writes into those same maps, so late arrivals are judged too.
   if (!noExtensions) {
-    installExtensionToolScope(session, {
+    childInfo.allowedTools = installExtensionToolScope(session, {
       loader,
       toolNames,
       disallowedSet,

@@ -4,6 +4,7 @@ export interface ChildSessionInfo {
   isChild: true;
   agentId?: string;
   type?: string;
+  allowedTools?: () => Set<string>;
   /** Explicit .md tool declaration, captured for opt-in extensions at load time. */
   toolDeclaration?: {
     sourcePath: string;

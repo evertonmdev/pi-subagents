@@ -60,6 +60,7 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
     faux = registerFauxProvider({ provider: "faux", models: [{ id: "faux-1", contextWindow: 200_000 }] });
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     faux.unregister();
     rmSync(cwd, { recursive: true, force: true });
   });
@@ -83,6 +84,7 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
             inheritContext: false,
             runInBackground: false,
             isolated: false,
+            persistSession: false,
             ...cfg,
           } as AgentConfig,
         ],
@@ -110,7 +112,8 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
           active = s.getActiveToolNames();
         },
       });
-    } catch {
+    } catch (error) {
+      if (!active.length) throw error;
       // A no-op/erroring prompt turn is fine — the gated tool set is fixed at
       // construction, which `onSessionCreated` already captured.
     }
@@ -122,6 +125,58 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
     // The extension actually loaded and its tool reached the live session.
     expect(active).toContain(EXT_TOOL);
     for (const b of BUILTINS) expect(active).toContain(b);
+  });
+
+  it("resolves a named child extension from the parent's explicit harness resources", async () => {
+    vi.stubEnv("HARNESS_EXTENSION_PATHS", JSON.stringify([FIXTURE]));
+    const canon = extensionCanonicalName(FIXTURE);
+    const active = await activeToolsFor({ extensions: [canon], builtinToolNames: ["read"], extSelectors: [`ext:${canon}`] });
+    expect(active).toContain(EXT_TOOL);
+    expect(active).not.toContain("bash");
+  });
+
+  it("does not load parent resources excluded by the child's declaration", async () => {
+    vi.stubEnv("HARNESS_EXTENSION_PATHS", JSON.stringify([FIXTURE]));
+    const active = await activeToolsFor({ extensions: true, excludeExtensions: [extensionCanonicalName(FIXTURE)] });
+    expect(active).not.toContain(EXT_TOOL);
+    expect(active).toContain("read");
+  });
+
+  it("does not start a silently incomplete agent when a declared extension is absent", async () => {
+    await expect(activeToolsFor({ extensions: ["missing-required-extension"] })).rejects.toThrow(/Declared extensions failed to load/);
+  });
+
+  it("loads the harness Supabase extension into a declared database child", async () => {
+    const supabase = resolve(fileURLToPath(new URL("../../../supabase/index.ts", import.meta.url)));
+    vi.stubEnv("HARNESS_EXTENSION_PATHS", JSON.stringify([supabase]));
+    const active = await activeToolsFor({ extensions: ["supabase"], builtinToolNames: ["read"],
+      sourcePath: join(cwd, "database.md"), extSelectors: ["ext:supabase"],
+      disallowedTools: ["supabase_get_schemas"],
+    });
+    expect(active).toContain("supabase_run_readonly_query");
+    expect(active).not.toContain("supabase_get_schemas");
+    expect(active).not.toContain("bash");
+  });
+
+  it("loads the harness MCP adapter into a declared child", async () => {
+    const mcp = resolve(fileURLToPath(new URL("../../../mcp/index.ts", import.meta.url)));
+    vi.stubEnv("HARNESS_EXTENSION_PATHS", JSON.stringify([mcp]));
+    const active = await activeToolsFor({ extensions: ["mcp"], builtinToolNames: ["read"],
+      sourcePath: join(cwd, "database.md"), extSelectors: ["ext:mcp"],
+    });
+    expect(active).toContain("mcp");
+  });
+
+  it("resolves extensions:mcp and ext:mcp against the pi-mcp-adapter package", async () => {
+    const mcp = process.env.HARNESS_TEST_MCP_PACKAGE ?? resolve(fileURLToPath(new URL("../../pi-mcp-adapter/index.ts", import.meta.url)));
+    vi.stubEnv("HARNESS_EXTENSION_PATHS", JSON.stringify([mcp]));
+    const active = await activeToolsFor({ extensions: ["mcp"], builtinToolNames: ["read"],
+      sourcePath: join(cwd, "database.md"), extSelectors: ["ext:mcp"],
+    });
+    expect(active).toContain("mcp");
+    expect(active).not.toContain("bash");
+    const excluded = await activeToolsFor({ extensions: ["mcp"], excludeExtensions: ["mcp"], builtinToolNames: ["read"] });
+    expect(excluded).not.toContain("mcp");
   });
 
   it("an extension tool is absent when extensions are disabled (not loaded)", async () => {
