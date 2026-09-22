@@ -258,7 +258,7 @@ describe("agent-runner final output capture", () => {
     expect(settingsManagerCreate).toHaveBeenCalledWith("/tmp/worktree", "/mock/agent-dir");
     // Same claim as before `rememberAgents` flipped the default — the effective
     // cwd reaches the session manager — now via the persistent constructor.
-    expect(sessionManagerCreate).toHaveBeenCalledWith("/tmp/worktree", undefined, expect.anything());
+    expect(sessionManagerCreate).toHaveBeenCalledWith("/tmp/worktree", "/sessions/parent.jsonl.subagents/sessions", expect.anything());
     expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/tmp/worktree",
       agentDir: "/mock/agent-dir",
@@ -907,7 +907,7 @@ describe("agent-runner session persistence", () => {
     expect(sessionManagerOpen).toHaveBeenCalledWith("/sessions/explore.jsonl", "/normal/pi/sessions");
   });
 
-  it("uses pi's normal persistent session location and links to the parent session", async () => {
+  it("stores children beneath the parent, outside native resume discovery", async () => {
     vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ persistSession: true }));
     settingsManagerGetSessionDir.mockReturnValue("/normal/pi/sessions");
     const { session } = createSession("OK");
@@ -918,7 +918,7 @@ describe("agent-runner session persistence", () => {
     expect(sessionManagerInMemory).not.toHaveBeenCalled();
     expect(sessionManagerCreate).toHaveBeenCalledWith(
       "/tmp",
-      "/normal/pi/sessions",
+      "/sessions/parent.jsonl.subagents/sessions",
       { parentSession: "/sessions/parent.jsonl" },
     );
     expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -938,7 +938,7 @@ describe("agent-runner session persistence", () => {
 
     expect(sessionManagerCreate).toHaveBeenCalledWith(
       "/repo",
-      "/repo/.seams/pi-sessions/seam-plan-reviewer",
+      "/repo/.seams/pi-sessions/seam-plan-reviewer/.subagents/sessions",
       { parentSession: "/sessions/parent.jsonl" },
     );
   });

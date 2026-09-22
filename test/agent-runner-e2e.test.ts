@@ -23,7 +23,8 @@
  * provider registers in a different `pi-ai` module instance than the one
  * pi-coding-agent streams through, which is brittle and orthogonal to gating.)
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,6 +126,16 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
     // The extension actually loaded and its tool reached the live session.
     expect(active).toContain(EXT_TOOL);
     for (const b of BUILTINS) expect(active).toContain(b);
+  });
+
+  it("native resume lists the parent while the child can still be opened by saved path", async () => {
+    const parent = join(cwd,"parent.jsonl"), childDir = join(parent+".subagents","sessions"), child = join(childDir,"child.jsonl");
+    mkdirSync(childDir,{recursive:true});
+    writeFileSync(parent,JSON.stringify({type:"session",version:3,id:"parent",timestamp:new Date().toISOString(),cwd})+"\n");
+    writeFileSync(child,JSON.stringify({type:"session",version:3,id:"child",timestamp:new Date().toISOString(),cwd,parentSession:parent})+"\n");
+    expect((await SessionManager.list(cwd,cwd)).map(s=>s.id)).toEqual(["parent"]);
+    expect((await SessionManager.listAll(cwd)).map(s=>s.id)).toEqual(["parent"]);
+    expect(SessionManager.open(child).getSessionId()).toBe("child");
   });
 
   it("resolves a named child extension from the parent's explicit harness resources", async () => {

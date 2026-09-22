@@ -2861,7 +2861,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         {
           id: "rememberAgents",
           label: "Remember agents",
-          description: "Persist subagent sessions so `@handle` can resume one long after it finished (they also appear in /resume)",
+          description: "Persist subagent histories under their parent for @handle resume, without listing children in /resume",
           currentValue: getRememberAgents() ? "on" : "off",
           values: ["on", "off"],
         },

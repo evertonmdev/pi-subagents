@@ -1018,6 +1018,12 @@ export async function runAgent(
   const settingsManager = SettingsManager.create(configCwd, agentDir);
   const configuredSessionDir = resolveConfiguredSessionDir(agentConfig?.sessionDir, effectiveCwd);
   const defaultSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR ?? settingsManager.getSessionDir?.();
+  // Pi's /resume scans only the root session directory. Keep child histories
+  // with their owning session; native Agent resume still uses the saved path.
+  const parentSessionFile = ctx.sessionManager?.getSessionFile?.();
+  const childSessionDir = configuredSessionDir ? join(configuredSessionDir, ".subagents", "sessions") : parentSessionFile
+    ? join(`${parentSessionFile}.subagents`, "sessions")
+    : join(configuredSessionDir ?? defaultSessionDir ?? join(agentDir, "sessions"), ".subagents", "sessions");
   // Frontmatter wins when it says anything; otherwise the project default,
   // which `rememberAgents` supplies for top-level agents only. Same precedence
   // as `outputTranscript`.
@@ -1028,13 +1034,13 @@ export async function runAgent(
     // apply. `sessionDir` still matters for a later /new or /branch off it.
     ? SessionManager.open(options.resumeSessionFile, configuredSessionDir ?? defaultSessionDir)
     : persistSession
-      ? SessionManager.create(effectiveCwd, configuredSessionDir ?? defaultSessionDir, {
+      ? SessionManager.create(effectiveCwd, childSessionDir, {
           // Optional metadata — it only nests the subagent under its spawner in
           // `/resume`. Until `rememberAgents` this ran solely for the rare
           // `persist_session: true` agent; now it runs for every spawn, so a
           // context without a session manager (a bare programmatic ctx) must
           // still persist rather than take the whole spawn down.
-          parentSession: ctx.sessionManager?.getSessionFile?.(),
+          parentSession: parentSessionFile,
         })
       : SessionManager.inMemory(effectiveCwd);
 
