@@ -20,6 +20,7 @@ import { abortable } from "./abortable.js";
 import { hasAgentBadge, renderAgentName } from "./agent-color.js";
 import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "./agent-file-toggle.js";
 import { AgentManager } from "./agent-manager.js";
+import { describeAgentProgress } from "./agent-progress.js";
 import { collectAgentRoster, formatAgentRoster } from "./agent-roster.js";
 import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getConfig, getFallbackSubagent, isDefaultsDisabled, NO_FALLBACK, registerAgents, resolveSpawnType, resolveType, setDefaultsDisabled, setFallbackSubagent } from "./agent-types.js";
@@ -2018,8 +2019,8 @@ Terse command-style prompts produce shallow, generic work.
     name: SUBAGENT_TOOL_NAMES.GET_RESULT,
     label: "Get Agent Result",
     description:
-      "Check status and retrieve results from a background agent. Use the agent ID returned by Agent with run_in_background.",
-    promptSnippet: "Check status and retrieve results from a background agent",
+      "Inspect a background agent by ID or handle. While running, returns its original assignment and recent session activity without waiting or interrupting it. After completion, retrieves its result.",
+    promptSnippet: "Inspect what a subagent was asked to do and what it is doing now, or retrieve its result",
     parameters: Type.Object({
       agent_id: Type.String({
         description: "The agent ID to check. The agent's handle also works — its `name` if you gave it one, otherwise its type (`explore`, `explore-2`).",
@@ -2072,7 +2073,9 @@ Terse command-style prompts produce shallow, generic work.
         `Description: ${record.description}\n\n`;
 
       if (record.status === "running") {
-        output += "Agent is still running. Use wait: true or check back later.";
+        output += `${describeAgentProgress(record)}\n\nAgent is still running. Use wait: true or check back later.`;
+      } else if (record.status === "queued") {
+        output += describeAgentProgress(record);
       } else if (record.status === "error") {
         output += `Error: ${record.error}${partialOutputSuffix(record)}`;
       } else {

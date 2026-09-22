@@ -88,6 +88,24 @@ async function spawnBackground(tools: Map<string, any>): Promise<{ id: string; q
 }
 
 describe("get_subagent_result wait:true on a queued agent", () => {
+  it("lets main inspect a live child by ID without waiting or consuming its result", async () => {
+    const { pi, tools, lifecycle } = makePi();
+    subagentsExtension(pi);
+    deferredRuns();
+    const { id } = await spawnBackground(tools);
+    const manager = (globalThis as Record<symbol, unknown>)[Symbol.for("pi-subagents:manager")] as {
+      getRecord(id: string): { resultConsumed?: boolean };
+    };
+    const record = manager.getRecord(id);
+    record.resultConsumed = false;
+    const result = await tools.get("get_subagent_result").execute(
+      "tc-inspect", { agent_id: id, wait: false }, undefined, undefined, ctx(),
+    );
+    expect(textOf(result)).toContain("Original assignment: go");
+    expect(textOf(result)).toContain("Agent is still running");
+    expect(record.resultConsumed).toBe(false);
+    await lifecycle.get("session_shutdown")?.();
+  });
   it("waits through queue start and returns the result (no 'still running')", async () => {
     const { pi, tools, lifecycle } = makePi();
     subagentsExtension(pi);

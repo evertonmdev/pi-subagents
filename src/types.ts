@@ -145,6 +145,8 @@ export interface AgentRecord {
    */
   alias?: string;
   description: string;
+  /** Original assignment while the live record exists; session history is authoritative after restoration. */
+  taskPrompt?: string;
   status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
   result?: string;
   error?: string;

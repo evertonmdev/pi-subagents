@@ -23,11 +23,11 @@
  * provider registers in a different `pi-ai` module instance than the one
  * pi-coding-agent streams through, which is brittle and orthogonal to gating.)
  */
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { extensionCanonicalName, runAgent } from "../src/agent-runner.js";
 import { registerAgents } from "../src/agent-types.js";

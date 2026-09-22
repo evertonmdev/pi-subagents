@@ -335,6 +335,7 @@ export class AgentManager {
         // spawn is reopening, and re-deriving it would lose the numbering.
         : options.reclaim?.handle ?? assignHandle(handleBase(type), this.takenHandles()),
       description: options.description,
+      taskPrompt: prompt,
       // Reclaimed here, or filled in below from `name` — in which case it must
       // see the handle this record just took, since both come out of the same
       // namespace.

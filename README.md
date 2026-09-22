@@ -405,7 +405,10 @@ Launch a sub-agent.
 
 ### `get_subagent_result`
 
-Check status and retrieve results from a background agent.
+Check status and retrieve results from a background agent. While it is running,
+`wait: false` returns the original assignment when available and a bounded
+snapshot of recent messages and tool activity without interrupting the agent.
+Use its ID or numbered handle, for example `general-purpose-7`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
