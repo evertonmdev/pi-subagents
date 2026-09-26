@@ -162,8 +162,51 @@ describe("subagent tool routing resolution and inheritance", () => {
     expect(ctorArgs.additionalExtensionPaths).toContain(routerPath);
   });
 
+  it("keeps the profile scope and parent workflow envelope through child startup and prompt", async () => {
+    const manifestDir = join(tmp, "runtime");
+    const manifestPath = join(manifestDir, "runtime-manifest.json");
+    const projectPath = join(manifestDir, "extensions", "project-intelligence", "index.ts");
+    mkdirSync(join(manifestDir, "extensions", "project-intelligence"), { recursive: true });
+    writeFileSync(manifestPath, "{}");
+    writeFileSync(projectPath, "// project extension");
+    loaderExtensionsRef.current.extensions = [{ path: projectPath, tools: new Map() }];
+    process.env.HARNESS_RUNTIME_MANIFEST = manifestPath;
+    process.env.HARNESS_PROJECT_TASK = "11111111-1111-1111-1111-111111111111";
+    registerAgents(new Map([["backend", {
+      name: "backend", description: "Backend writer", builtinToolNames: ["read", "edit", "write"],
+      extensions: true, excludeExtensions: ["pi-permission-system"],
+      skills: false, systemPrompt: "implement", promptMode: "replace",
+    }]]));
+    const contexts: unknown[] = [];
+    const session = {
+      messages: [], getActiveToolNames: () => ["read", "edit", "write"],
+      getAllTools: () => ["read", "edit", "write"].map(name => ({ name })),
+      setActiveToolsByName: vi.fn(), subscribe: vi.fn(() => () => {}),
+      bindExtensions: vi.fn(async () => { contexts.push(getChildSessionInfo()); }),
+      setSessionName: vi.fn(), agent: { beforeToolCall: undefined },
+      prompt: vi.fn(async () => { contexts.push(getChildSessionInfo()); }),
+    };
+    createAgentSession.mockResolvedValue({ session });
+    await runAgent({ cwd: tmp, getSystemPrompt: () => "system",
+      model: { id: "test", provider: "test" }, modelRegistry: { find: () => undefined },
+    } as any, "backend", "implement", {
+      pi: { exec: async () => ({ code: 0, stdout: "", stderr: "" }) } as any,
+      agentId: "writer-1",
+    });
+    expect(defaultResourceLoaderCtor.mock.calls[0][0].additionalExtensionPaths).toContain(projectPath);
+    for (const info of contexts as any[]) {
+      expect(info?.projectTaskId).toBe(process.env.HARNESS_PROJECT_TASK);
+      expect(info?.allowedTools()).toEqual(new Set(["read", "edit", "write"]));
+    }
+    expect(contexts).toHaveLength(2);
+  });
+
   it("passes resolved Markdown permissions to extension loading without leaking to root", async () => {
     const sourcePath = join(tmp, ".pi/agents/db.md");
+    loaderExtensionsRef.current = {
+      extensions: [{ path: join(tmp, "supabase", "index.ts"), tools: new Map([["supabase_get_tables", {}]]) }],
+      errors: [], runtime: {},
+    };
     registerAgents(new Map([["db", {
       name: "db", description: "database", sourcePath,
       builtinToolNames: ["read"], extSelectors: ["ext:supabase"],

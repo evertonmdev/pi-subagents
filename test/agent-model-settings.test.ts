@@ -53,6 +53,20 @@ describe("settings.json agentModels", () => {
     expect(loadCustomAgents(env.dir).get("backend")?.thinking).toBe("medium");
   });
 
+  it("applies a named Explore assignment instead of the embedded provider preference", () => {
+    settings({ Explore: "xai/grok-4.6:low" });
+    expect(loadCustomAgents(env.dir).get("Explore")).toMatchObject({
+      model: "xai/grok-4.6", thinking: "low", modelFromSettings: true,
+    });
+  });
+
+  it("applies the project default to embedded Explore but preserves custom concrete models", () => {
+    settings({ default: "xai/grok-4.6:high" });
+    expect(loadCustomAgents(env.dir).get("Explore")).toMatchObject({
+      model: "xai/grok-4.6", modelFromSettings: true,
+    });
+  });
+
   it("leaves direct declarations alone and rejects provider substitution", () => {
     const config = loadCustomAgents(env.dir).get("backend")!;
     config.model = "openai-codex/gpt-6-astra";

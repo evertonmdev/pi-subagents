@@ -91,7 +91,10 @@ export function applyAgentModelSettings(config: AgentConfig, models: Record<stri
       overrideThinking = match[2] as ThinkingLevel;
     }
   }
-  const assignment = models[alias] ?? (!config.model || config.model === "inherit" ? models.default : undefined);
+  // A named project assignment must also override embedded defaults such as
+  // Explore's Haiku preference. Otherwise it can resolve to an unrelated SSO provider.
+  const assignment = models[config.name] ?? models[alias]
+    ?? (!config.model || config.model === "inherit" || config.isDefault ? models.default : undefined);
   if (!assignment) return;
   const match = /^(.*):(off|minimal|low|medium|high|xhigh)$/.exec(assignment);
   config.model = match ? match[1] : assignment;

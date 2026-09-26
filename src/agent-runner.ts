@@ -43,6 +43,7 @@ export const SUBAGENT_TOOL_NAMES = {
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES: string[] = Object.values(SUBAGENT_TOOL_NAMES);
+const childContexts = new WeakMap<AgentSession, ChildSessionInfo>();
 
 /**
  * Canonical name of an extension for `extensions: [...]` allowlist matching.
@@ -779,6 +780,17 @@ export async function runAgent(
     }
   }
 
+  // A delegated project task needs the same workflow ceiling in the child.
+  // Its extension is bundled with the harness, not inherited from the parent's
+  // extension registry by Pi's separately constructed child session.
+  if (!noExtensions && process.env.HARNESS_PROJECT_TASK && process.env.HARNESS_RUNTIME_MANIFEST) {
+    const projectPath = join(dirname(process.env.HARNESS_RUNTIME_MANIFEST), "extensions", "project-intelligence", "index.ts");
+    if (!existsSync(projectPath)) throw new Error("Required project workflow extension is unavailable; refusing to run agent.");
+    if (!additionalPaths.includes(projectPath)) additionalPaths.push(projectPath);
+    keepNames.add("project-intelligence");
+    requiredNames.add("project-intelligence");
+  }
+
   // Unless extensions are completely disabled (e.g. isolated: true) or explicitly
   // excluded (exclude_extensions: [tool-routing]), child subagents inherit the
   // harness tool router so their candidate tools are filtered by Jev per turn.
@@ -825,6 +837,7 @@ export async function runAgent(
   });
   const childInfo: ChildSessionInfo = {
     isChild: true as const, agentId: options.agentId, type,
+    ...(process.env.HARNESS_PROJECT_TASK && { projectTaskId: process.env.HARNESS_PROJECT_TASK }),
     toolDeclaration: agentConfig?.sourcePath ? {
       sourcePath: agentConfig.sourcePath,
       selectors: [...(agentConfig.extSelectors ?? [])],
@@ -837,6 +850,24 @@ export async function runAgent(
     const loaded = new Set(loader.getExtensions().extensions.flatMap(extension => extensionCanonicalNames(extension.path)));
     const missing = [...requiredNames].filter(name => !excludeNames.has(name) && !loaded.has(name));
     if (missing.length) throw new Error(`Declared extensions failed to load: ${missing.join(", ")}. Refusing to start an incomplete agent.`);
+
+    // Supabase is a synchronous, opt-in extension. A loaded module with zero
+    // registered tools is still an unusable database agent (for example when
+    // the child declaration was lost while constructing its Pi session).
+    // Check registration before prompting the model so it cannot report a
+    // database audit that never had a chance to run.
+    if (extNames.has("supabase")) {
+      const registered = new Set(loader.getExtensions().extensions
+        .filter(extension => extensionCanonicalNames(extension.path).includes("supabase"))
+        .flatMap(extension => [...extension.tools.keys()]));
+      const requested = narrowing.get("supabase");
+      const missingTools = requested
+        ? [...requested].filter(name => !registered.has(name))
+        : registered.size === 0 ? ["supabase tools"] : [];
+      if (missingTools.length) {
+        throw new Error(`Agent "${type}" declares ext:supabase, but ${missingTools.join(", ")} did not register. Check the child extension load and tool declaration; database access was not attempted.`);
+      }
+    }
   }
 
   if (requiresPermissions && process.env.HARNESS_RUNTIME_MANIFEST) {
@@ -1091,14 +1122,14 @@ export async function runAgent(
   // (e.g. loading credentials, setting up state). Tool gating already happened
   // at session construction via the `tools:` allowlist above — no separate
   // post-bind filter is needed. All ExtensionBindings fields are optional.
-  await session.bindExtensions({
+  await runInChildSessionContext(childInfo, () => session.bindExtensions({
     onError: (err) => {
       options.onToolActivity?.({
         type: "end",
         toolName: `extension-error:${err.extensionPath}`,
       });
     },
-  });
+  }));
 
   // With `allowedToolNames` unset, the registry is scoped by `excludeTools` but
   // the ACTIVE set still needs managing: pi activates only its four default
@@ -1116,6 +1147,7 @@ export async function runAgent(
       nestedToolNames,
     });
   }
+  childContexts.set(session, childInfo);
 
   options.onSessionCreated?.(session);
 
@@ -1182,10 +1214,7 @@ export async function runAgent(
   // on counts as this run's output (a fresh session, so usually 0).
   const startLen = session.messages.length;
   try {
-    await runInChildSessionContext(
-      { isChild: true, agentId: options.agentId, type },
-      () => session.prompt(effectivePrompt),
-    );
+    await runInChildSessionContext(childInfo, () => session.prompt(effectivePrompt));
   } finally {
     unsubTurns();
     collector.unsubscribe();
@@ -1237,7 +1266,7 @@ export async function resumeAgent(
   try {
     const sessionName = (session as any)._sessionName ?? (session as any).sessionName;
     await runInChildSessionContext(
-      { isChild: true, agentId: sessionName, type: sessionName },
+      childContexts.get(session) ?? { isChild: true, agentId: sessionName, type: sessionName },
       () => session.prompt(prompt),
     );
   } finally {

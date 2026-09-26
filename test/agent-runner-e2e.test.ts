@@ -169,6 +169,21 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
     expect(active).not.toContain("bash");
   });
 
+  it("fails before prompting when a declared Supabase tool never registers", async () => {
+    const extensionDir = join(cwd, "supabase");
+    mkdirSync(extensionDir);
+    const emptyExtension = join(extensionDir, "index.ts");
+    writeFileSync(emptyExtension, "export default function () {}\n");
+    vi.stubEnv("HARNESS_EXTENSION_PATHS", JSON.stringify([emptyExtension]));
+
+    await expect(activeToolsFor({
+      extensions: ["supabase"],
+      builtinToolNames: ["read"],
+      sourcePath: join(cwd, "database.md"),
+      extSelectors: ["ext:supabase/supabase_run_readonly_query"],
+    })).rejects.toThrow(/supabase_run_readonly_query did not register.*database access was not attempted/);
+  });
+
   it("loads the harness MCP adapter into a declared child", async () => {
     const mcp = resolve(fileURLToPath(new URL("../../../mcp/index.ts", import.meta.url)));
     vi.stubEnv("HARNESS_EXTENSION_PATHS", JSON.stringify([mcp]));

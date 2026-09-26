@@ -5,6 +5,8 @@ export interface ChildSessionInfo {
   agentId?: string;
   type?: string;
   allowedTools?: () => Set<string>;
+  /** Parent project workflow envelope captured when this child was created. */
+  projectTaskId?: string;
   /** Explicit .md tool declaration, captured for opt-in extensions at load time. */
   toolDeclaration?: {
     sourcePath: string;
